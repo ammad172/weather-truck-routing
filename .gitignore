@@ -1,0 +1,26 @@
+# Assessment brief: kept local only, not published
+ASSIGNMENT.md
+docs/
+
+# Secrets
+.env
+*.env
+!.env.example
+
+# Python
+.venv/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+backend/staticfiles/
+db.sqlite3
+
+# Node
+node_modules/
+frontend/dist/
+
+# Editors / OS
+.vscode/
+.idea/
+Thumbs.db
+.DS_Store
