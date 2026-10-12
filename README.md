@@ -2,7 +2,7 @@
 
 A React + Django web app that helps a truck driver choose the safest route between two places, based on forecast weather along the way, the truck's load weight, and travel time.
 
-> **Status:** work in progress. The backend API is complete: HERE truck routing and geocoding, Open-Meteo weather, the risk, checkpoint, ETA and recommendation logic, and the 0–48 h corridor heatmap data. The React map UI is next. See [PLAN.md](PLAN.md).
+> **Status:** work in progress. The backend API is complete. The React UI plans trips and shows every route, its checkpoints, risk levels and ETAs (in the user's local time) on a MapLibre map. The heatmap layer with the 0–48 h slider is next. See [PLAN.md](PLAN.md).
 
 ## Backend setup
 
@@ -28,6 +28,18 @@ cd backend
 ```
 
 The tests run offline. Provider responses are recorded fixtures in `backend/routing/tests/fixtures/`.
+
+## Frontend setup
+
+Requires Node 20+. Run it alongside the backend:
+
+```powershell
+cd frontend
+npm install
+npm run dev        # http://localhost:5173 (API calls are proxied to Django on :8000)
+```
+
+`npm test`, `npm run typecheck`, `npm run lint` and `npm run e2e` (the end-to-end browser test) are described in [frontend/README.md](frontend/README.md).
 
 ## API
 
@@ -171,3 +183,14 @@ HERE is asked for 2 alternatives, but it returns *up to* that many. If fewer com
 - it takes no more than 1.5× the fastest route's time.
 
 If no detour qualifies, fewer routes are shown and the response explains why. Generated routes are marked `"source": "via-point"`. For example, HERE gives 2 routes for Dallas to Oklahoma City and 3 for Dallas to Denver.
+
+## Limitations
+
+- **Heatmap resolution depends on trip length and the weather plan.** On Open-Meteo's free tier the heatmap grid is capped at 300 points, so the cells get larger as the corridor gets longer:
+
+  | Trip | Cell size | Points |
+  |---|---|---|
+  | Short trip | about 7 mi | |
+  | Dallas → Denver, 800 mi with three diverging routes | about 17 mi | 239 |
+
+  Weather features smaller than a cell, such as a single thunderstorm cell or a narrow snow band, get averaged into the surrounding area. With a paid Open-Meteo key (`OPEN_METEO_API_KEY`), the cap rises to 1,000 points. That gives about 8-mile cells on the same trip with no code change. Checkpoint risk, which drives the recommendation, isn't affected: each checkpoint gets its own forecast at its exact location.

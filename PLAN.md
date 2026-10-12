@@ -41,6 +41,7 @@ Implementation should happen in a **new Claude Code session started from `C:\Pro
 - **Weather fetch:** one Open-Meteo fetch covers both the checkpoints and the grid, in batches of 100 run in parallel. Each location is cached for the departure day plus 2 more.
 - **Time range:** the slider starts at the **departure hour**, not the current hour, so every frame overlaps the trip.
 - **Response format:** compact arrays (`points[]`, plus `risk[point][hour]`, wind, rain and snow), gzip-compressed.
+- **Slider label:** label the slider as **hours after departure**, e.g. "+12 h after departure · Tue 1:00 AM CDT". The track ticks read "Departure", "+12 h", "+24 h", "+36 h" and "+48 h".
 - **Slider:** each point gets one property per hour, and the slider changes only the heatmap's `heatmap-weight` paint expression (`["get", "h12"]`). That means no `setData` and **no refetch** while dragging.
 - The heatmap shows forecast risk at the slider hour. A toggle switches between risk, wind, precipitation and snow.
 
