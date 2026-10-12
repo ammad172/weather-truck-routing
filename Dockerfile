@@ -32,7 +32,9 @@ RUN python -m whitenoise.compress /app/frontend/dist
 RUN useradd --create-home --uid 1000 app && mkdir -p /app/data && chown app /app/data
 USER app
 
+# Before the workers start, create the SQLite cache (file, WAL mode, table) once: several
+# workers creating a fresh file at the same moment can fail with "database is locked".
 # Render sets PORT (10000 by default). Threads, because a plan mostly waits on HERE and
 # Open-Meteo; the timeout covers a cold plan plus one rate-limit retry.
 EXPOSE 10000
-CMD ["sh", "-c", "exec gunicorn config.wsgi --bind 0.0.0.0:${PORT:-10000} --workers 2 --threads 4 --timeout 60 --access-logfile -"]
+CMD ["sh", "-c", "python manage.py createcachetable && exec gunicorn config.wsgi --bind 0.0.0.0:${PORT:-10000} --workers 2 --threads 4 --timeout 60 --access-logfile -"]

@@ -2,7 +2,41 @@
 
 A React + Django web app that helps a truck driver choose the safest route between two places, based on forecast weather along the way, the truck's load weight, and travel time.
 
-> **Status:** work in progress. The backend API is complete. The React UI plans trips and shows every route, its checkpoints, risk levels and ETAs (in the user's local time) on a MapLibre map, with a forecast heatmap of the corridor and a 0–48 h slider. The Docker image and Render Blueprint are ready; the app isn't deployed yet. See [PLAN.md](PLAN.md).
+> **Live:** https://weather-truck-routing.wittywave-86ad3def.eastasia.azurecontainerapps.io
+>
+> Plan a trip, compare up to three truck routes by the forecast risk along each one, and scrub a 0–48 h weather heatmap of the corridor. The first visit after a quiet spell takes a few seconds while the container starts.
+
+## Architecture
+
+```mermaid
+flowchart LR
+  subgraph Browser["Browser: React + MapLibre"]
+    Form["Trip form and place suggestions"] --> Map["Map: routes colored by risk, checkpoints, heatmap"]
+    Slider["0–48 h slider"] -->|"setPaintProperty only"| Map
+  end
+  subgraph Django["Django API (one container, gunicorn)"]
+    Geo["/api/geocode"]
+    Plan["/api/plan"]
+    Cache[("SQLite cache<br/>weather 30 min · routes 1 h · places 24 h")]
+  end
+  Form -->|place name| Geo
+  Form -->|trip| Plan
+  Geo --> HERE["HERE<br/>geocoding + truck routing"]
+  Plan --> HERE
+  Plan --> OM["Open-Meteo<br/>hourly wind, rain, snow"]
+  HERE -.-> Cache
+  OM -.-> Cache
+  Plan -->|"routes, checkpoints, ranking, heatmap"| Map
+```
+
+Inside `/api/plan` (`backend/routing/planner.py`):
+
+1. **Routes:** HERE truck routes on the gross weight (load plus an assumed 35,000 lb empty truck). If HERE returns fewer than 3, detours through points beside the fastest route make up the set (`alternatives.py`).
+2. **Checkpoints:** every 10, 25 or 50 miles along each route (`sampling.py`). Each has an **ETA** from HERE's per-stretch travel times (`eta.py`).
+3. **Weather:** each checkpoint, and each point of the corridor heatmap, is snapped to a shared 0.1° grid and de-duplicated. Only cells that aren't cached are fetched, in batches (`grid.py`, `weather.py`).
+4. **Risk:** each checkpoint is classified with the forecast for the hour the truck gets there, and the load rules apply (`risk.py`). Each route gets a summary of its No Travel, Severe and High miles and its average risk (`recommend.py`).
+5. **Recommendation:** routes are ranked by No Travel miles, then Severe, then High, then average risk, then travel time, with a one-line reason.
+6. **Heatmap:** the corridor grid, with 49 hourly risk levels and the raw wind, rain and snow per point (`heatmap.py`). The browser draws it with no further requests.
 
 ## Backend setup
 
@@ -255,30 +289,87 @@ If no detour qualifies, fewer routes are shown and the response explains why. Ge
 
 ## Deployment
 
-The whole app is **one Docker web service**. The [Dockerfile](Dockerfile) builds the React app with Node, then runs Django under gunicorn. WhiteNoise serves the built files, and Django serves the API at `/api/` and the app's `index.html` at every other path. There's one URL and no CORS.
+**Live:** https://weather-truck-routing.wittywave-86ad3def.eastasia.azurecontainerapps.io
 
-- **Caching:** hashed files under `/assets/` are cached for good (`immutable`) and served pre-compressed (the 1.3 MB bundle travels as about 360 KB). `index.html` is `no-cache`, so a redeploy shows up on the next visit.
+The whole app is **one Docker container**. The [Dockerfile](Dockerfile) builds the React app with Node, then runs Django under gunicorn. WhiteNoise serves the built files, and Django serves the API at `/api/` and the app's `index.html` at every other path. There's one URL and no CORS.
+
+- **Caching:** hashed files under `/assets/` are cached for good (`immutable`) and served pre-compressed. The app's own code is a separate 10 KB (gzipped) file, so an update doesn't make browsers download MapLibre (286 KB gzipped) or React again. `index.html` is `no-cache`, so a redeploy shows up on the next visit.
 - **In production** (`DJANGO_DEBUG=0`), the API renders JSON only, and Django serves no static files of its own.
+- **Startup:** the container creates the SQLite cache once (`manage.py createcachetable`) before gunicorn starts its 2 workers × 4 threads. Several workers creating a fresh SQLite file at the same moment can fail with "database is locked".
 
-### Render
-
-[render.yaml](render.yaml) is a Render Blueprint for one **free** Docker web service.
-
-1. In Render, choose **New → Blueprint** and pick this repository.
-2. When asked, enter **`HERE_API_KEY`**. `DJANGO_SECRET_KEY` is generated for you.
-3. Deploy. Render's health check calls `/api/health`. The service's `onrender.com` hostname is added to `ALLOWED_HOSTS` automatically (Render provides it as `RENDER_EXTERNAL_HOSTNAME`).
+### Environment variables
 
 | Variable | Needed | Notes |
 |---|---|---|
-| `HERE_API_KEY` | yes | Server-side only, never sent to the browser |
-| `DJANGO_SECRET_KEY` | yes | Generated by the Blueprint |
-| `DJANGO_DEBUG` | | `0` in production |
-| `DJANGO_ALLOWED_HOSTS` | | Extra hostnames, such as a custom domain |
+| `HERE_API_KEY` | yes | Store it as a secret. It stays server-side and is never sent to the browser. |
+| `DJANGO_SECRET_KEY` | yes | A long random string, also stored as a secret |
+| `DJANGO_DEBUG` | yes | `0` |
+| `DJANGO_ALLOWED_HOSTS` | on Azure | The app's own hostname, e.g. `weather-truck-routing.<environment>.<region>.azurecontainerapps.io`. On Render it's added automatically, from `RENDER_EXTERNAL_HOSTNAME`. |
 | `CACHE_BACKEND`, `CACHE_DB` | | See [Weather call budget and caching](#weather-call-budget-and-caching) |
 
-> **Cold start:** Render's free tier puts the service to sleep after 15 minutes without traffic. The next visit wakes it, which takes **about a minute**. If you're reviewing the app, open the URL once and wait for it to load, then plan a trip. The first plan after waking is also slower, because the weather cache starts empty (see below).
+Don't set `FROZEN_NOW` or `HTTP_FIXTURES`; they're for the end-to-end tests. With `FROZEN_NOW` set, the app refuses to start unless debug is on.
 
-- **The cache after a sleep:** a free service's disk is wiped when it sleeps, restarts or redeploys, so the SQLite provider cache starts empty each time. While the service is awake, the cache works normally and is shared by both gunicorn workers. Keeping it through sleeps would need an external store, such as Render Key Value.
+### Azure Container Apps (how the live app runs)
+
+- **Image:** [.github/workflows/image.yml](.github/workflows/image.yml) builds it on every push to `main` and publishes it to GitHub's container registry, `ghcr.io/ammad172/weather-truck-routing:<commit>`. The package is public, so Azure pulls it without credentials.
+- **The app:** 0.5 vCPU / 1 GiB, scale to zero (at most 1 replica), external HTTPS ingress on port 10000. It's tagged `project=weather-truck-routing`.
+- **Environment:** a Consumption-only Container Apps environment with no log workspace, so there's no extra cost. Idle time costs nothing, and use stays inside the Container Apps monthly free grant.
+
+To create it (Azure CLI, signed in with `az login`):
+
+```powershell
+az containerapp env create --name wtr-env2 --resource-group <group> --location eastasia `
+  --enable-workload-profiles false --logs-destination none --tags project=weather-truck-routing
+
+az containerapp create --name weather-truck-routing --resource-group <group> --environment wtr-env2 `
+  --image ghcr.io/ammad172/weather-truck-routing:<commit> --ingress external --target-port 10000 `
+  --min-replicas 0 --max-replicas 1 --cpu 0.5 --memory 1.0Gi `
+  --secrets here-api-key=<HERE key> django-secret-key=<random> `
+  --env-vars HERE_API_KEY=secretref:here-api-key DJANGO_SECRET_KEY=secretref:django-secret-key `
+             DJANGO_DEBUG=0 DJANGO_ALLOWED_HOSTS=weather-truck-routing.<environment domain>
+```
+
+To deploy a new version: push to `main`, wait for the image workflow to finish, then point the app at the new image with `az containerapp update --image ghcr.io/ammad172/weather-truck-routing:<commit>`.
+
+What we learned deploying:
+
+- **Set `DJANGO_ALLOWED_HOSTS` when you create the app.** Our first environment came up as an Azure *express* environment. It has a single `--latest` revision and doesn't allow revision suffixes, and an environment-variable update was never rolled out to the running revision, which kept answering every request with 400. Creating the app with its hostname already set, in a `--enable-workload-profiles false` environment, worked first time. The settings also try to work out the hostname from Azure's `CONTAINER_APP_NAME` and `CONTAINER_APP_ENV_DNS_SUFFIX` variables, but on Azure don't rely on that: set it explicitly.
+- **There's no log workspace.** `az containerapp logs show` doesn't work without one. To read logs, add a Log Analytics workspace (its first 5 GB a month are free).
+
+> **Cold start:** with scale to zero, the first visit after a quiet spell starts the container, which takes a few seconds. After that the app answers immediately. The weather cache starts empty in each new container, so the first plan after a cold start fetches all of its weather.
+
+### Render
+
+[render.yaml](render.yaml) is a Render Blueprint for one free Docker web service, with a generated `DJANGO_SECRET_KEY` and `HERE_API_KEY` entered when the Blueprint is created. **Render asks for a card to create any Blueprint**, even a free one. Without a card, create the service by hand instead: **New → Web Service**, then pick Docker and the Free instance type, set the health check path to `/api/health`, and enter the variables above. Render's free tier sleeps after 15 minutes without traffic, takes about a minute to wake, and wipes its disk (and so the cache) on every sleep.
+
+## Edge cases
+
+What the app does in unusual situations, and where each case is tested. Backend tests are in `backend/routing/tests/`, and end-to-end tests in `frontend/e2e/`.
+
+| Situation | What happens | Tested in |
+|---|---|---|
+| From and To less than 1 mile apart | 400: "From and To are less than 1 mile apart. Choose two different places." Checked before any HERE or Open-Meteo call. (Before Phase 6 this crashed with a 500.) | `test_views.py`, `errors.spec.ts` |
+| A place that can't be found | 400: `Couldn't find "<text>".`, shown on the right field | `test_views.py` |
+| No truck route (e.g. to an island) | 422: "No truck route was found between these places." | `test_views.py`, `test_planner.py`, `errors.spec.ts` |
+| HERE returns fewer than 3 routes | Detours fill in; if none qualifies, fewer routes are shown with a note saying why | `test_alternatives.py` |
+| Departure more than 1 hour ago, or more than 13 days ahead | 400 on the Departure field. The form limits the range too. | `test_views.py`, `errors.spec.ts` |
+| Load below 0 or above 80,000 lb | 400 on the Load field. The form limits it too. | `test_views.py` |
+| No forecast for a checkpoint's hour | Counted as Low, and the plan includes a note. The checkpoint popup says "No forecast for this hour". | `test_planner.py` |
+| Every route crosses No Travel | The best one is still recommended, with the warning "Every route crosses No Travel conditions. Consider a later departure." | `test_recommend.py` |
+| Routes tie on every criterion | Kept in HERE's order; differences under 0.1 mi or 0.01 average risk count as ties | `test_recommend.py` |
+| Wind at 47 mph with a 35,000 lb load | No Travel (the load rule), and that route ranks last | `test_planner.py`, `test_heatmap.py` |
+| Open-Meteo per-minute limit | One short retry, then 503 "busy… wait about a minute" | `test_weather.py`, `test_views.py` |
+| Open-Meteo hourly or daily limit used up | No retry (it can't help). 503 naming the limit, with `Retry-After` until it resets. | `test_weather.py`, `test_views.py`, `errors.spec.ts` |
+| HERE or Open-Meteo fails | 502 with a readable message that never includes the API key | `test_views.py`, `test_here.py` |
+| Connection drops, or the server can't be reached | "Couldn't reach the server. Check your connection and try again." | `errors.spec.ts` |
+| A proxy error page instead of JSON | "The server had a problem. Please try again." | `errors.spec.ts` |
+| A re-plan (e.g. a new interval) fails | The previous routes stay on screen, and the error says so | `errors.spec.ts` |
+| A trip longer than the 48 h heatmap | The slider's "Arrives" mark is hidden. At +48 h the truck shows its mile, not "arrived". | not directly tested (follows from `truck.ts` and `ForecastTimeline.tsx`) |
+| A lone storm cell in the heatmap | Drawn in its true color, not averaged away (see [Heatmap smoothing](#heatmap-smoothing-neighbour-max)) | `heatmap.test.ts` |
+| Dragging the slider very fast | Only the heatmap's weight changes: no new layers, no new data, no network requests | `heatmap.spec.ts` |
+| A phone screen | The timeline moves below the map, and both ends of the trip stay in view | `mobile.spec.ts` |
+| Daylight-saving time and non-US time zones | All times use the browser's time zone; tests run in America/Chicago | `time.test.ts`, `plan.spec.ts` |
+| Two server workers starting on a fresh cache | The cache is created once before the workers start; a 6-process test covers it | `test_cache.py` |
 
 ## Limitations
 
@@ -292,3 +383,46 @@ The whole app is **one Docker web service**. The [Dockerfile](Dockerfile) builds
   Weather features smaller than a cell, such as a single thunderstorm cell or a narrow snow band, get averaged into the surrounding area. Checkpoint risk, which drives the recommendation, is affected much less: each checkpoint uses the 0.1° cell nearest to it. See [Weather grid snapping](#weather-grid-snapping).
 - **Very long trips at a 10-mile interval.** Three coast-to-coast routes at 10 miles have more checkpoint cells than the free tier allows per minute. For those trips the heatmap drops to its minimum (100 points), and the plan may still return the "busy, try again in a minute" message. A 25- or 50-mile interval works.
 - **Back-to-back new trips.** Two or three completely new trips planned within one minute can still exceed the free tier's per-minute limit. The one automatic retry covers short bursts. Beyond that, the user sees the "wait about a minute" message rather than a broken page.
+
+## Walkthrough script (about 5 minutes)
+
+A script for a screen recording of the live app. The checks below each step are what the viewer should see.
+
+**Before recording**
+- Open the live URL once, plan the demo trip (Dallas, TX → Denver, CO, 42,000 lb, 25 mi), then switch to 10 mi once. That starts the container and fills the weather cache for 30 minutes, so the recorded plans come back quickly.
+- Use a desktop browser window about 1440 × 900.
+- Each fresh trip costs about 350 of Open-Meteo's free 600 locations a minute. Re-planning the same trip or switching to 50 mi costs none, because the weather is cached. Changing the load costs little or nothing: the weather is cached, but HERE may route a heavier truck slightly differently. Switching to 10 mi adds about 110 more locations the first time.
+
+**1. The problem (0:00–0:30)**
+- Show the empty map. Say: "A truck driver choosing between routes needs to know what the weather will be *where the truck is, when it gets there*, not what it's like now. And how dangerous wind is depends on how heavy the load is."
+
+**2. Plan a trip (0:30–1:15)**
+- Type "Dallas" in From and pick *Dallas, TX*; type "Denver" in To and pick *Denver, CO*. Departure stays at the next hour; load 42,000 lb; checkpoints every 25 mi. Click **Plan routes**.
+- Point at the three routes: the recommended one is drawn on top, colored by risk; the others are grey. Read out the recommendation and its one-line reason.
+- Check: all times are in your own time zone, as the footer says.
+
+**3. Why this route (1:15–2:15)**
+- Go through the route cards: travel time, distance, arrival, the risk bar along the route, and miles at No Travel, Severe and High.
+- Explain the ranking: fewest No Travel miles first, then Severe, then High, then average risk, and only then travel time. Safety comes before speed.
+- Click another route card: the map and the checkpoint table switch to it.
+- Click a checkpoint row: the map flies there, and the popup shows the arrival time, the forecast for that hour, and what caused the risk level.
+
+**4. Load matters (2:15–2:45)**
+- Change the load to 25,000 lb and click **Re-plan routes**. If a route had strong wind, its risk may drop, because the heavier-load rules no longer apply (for example, 45–55 mph wind is No Travel above 30,000 lb). This needs few or no new weather calls.
+- Set it back to 42,000 lb.
+
+**5. The forecast heatmap (2:45–4:00)**
+- Drag the slider slowly from Departure to +48 h. The corridor heatmap changes hour by hour, the truck moves along the selected route, and the label reads "+N h after departure" with the local time.
+- Point at the strip behind the slider: each cell is the worst forecast anywhere in the corridor that hour. The dotted mark is when the truck arrives.
+- Drag fast back and forth: it stays smooth, and nothing is fetched.
+- Switch to **Wind**, **Rain** and **Snow**. The legend shows each one's bands (e.g. wind in mph), in the same five colors.
+- Press **Play** to animate it, then pause.
+
+**6. Checkpoint spacing (4:00–4:20)**
+- Switch to **10 mi**, then **50 mi**: the plan updates straight away with more or fewer checkpoints. Both come from the weather cache, which was warmed before recording.
+
+**7. How it's built (4:20–5:00)**
+- One Django + React container. HERE provides geocoding and truck routing (on the truck's gross weight), and Open-Meteo the hourly forecasts.
+- Weather lookups snap to a shared 0.1° grid and are cached, which keeps a plan within the free tier.
+- The heatmap shows the worst of each cell's neighbours, so a single storm cell is never averaged away.
+- Tests: 216 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.

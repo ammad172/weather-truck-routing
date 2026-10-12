@@ -2,6 +2,8 @@
 
 A running record of what each phase delivered, the decisions behind it, and what's next. It's for anyone resuming the work: a new Claude Code session, or a reviewer. The plan itself is in [PLAN.md](../PLAN.md); the README holds setup, the API and assumptions.
 
+**Live app:** https://weather-truck-routing.wittywave-86ad3def.eastasia.azurecontainerapps.io
+
 **Resume from:** `C:\Projects\weather-truck-routing`. Start Claude Code there so the project's Playwright MCP server loads. The frontend-design and context7 plugins are installed at user level and load on session start.
 
 **Local-only files (git-ignored):**
@@ -97,28 +99,43 @@ A running record of what each phase delivered, the decisions behind it, and what
 - **Truck marker:** hidden at the departure instant, too, so it no longer covers the A marker.
 - **Tests:** 205 backend, 40 frontend unit, and 2 e2e specs (replay) all pass.
 
-## Phase 6: deployment (in progress)
+## Phase 6: deployment, edge cases, README and walkthrough (2026-10-12)
 
-**Done:**
-- **Serving:** Django serves the React build. WhiteNoise serves `frontend/dist` at `/` (`WHITENOISE_ROOT`), and `config/spa.py` returns `index.html` (`no-cache`) for every non-API path. `/assets/*` is `immutable`. In production the API renders JSON only, so there's no `collectstatic` and no `STATIC_ROOT`.
-- **Checked locally with DEBUG off:** `/` and deep links return the app; assets are immutable and gzipped; the MapLibre worker `.mjs` is served as `text/javascript`; unknown `/api/` paths return 404, not the app. The production bundle boots in Chromium with no console errors, and the dev-only `window.__map` hook is absent.
-- **`Dockerfile`:** multi-stage (Node 24 builds the app; Python 3.12-slim runs it), with `whitenoise.compress` for pre-gzipped assets, a non-root user, the SQLite cache at `/app/data`, and gunicorn with 2 workers × 4 threads, binding to `$PORT`. `.dockerignore` keeps `.env`, `.venv`, `node_modules` and the fixtures out of the build context.
-- **`render.yaml`:** a free Docker web service with the `/api/health` check, `autoDeploy: false`, a generated `DJANGO_SECRET_KEY` and `HERE_API_KEY` entered in the dashboard. `RENDER_EXTERNAL_HOSTNAME` is added to `ALLOWED_HOSTS`, because Render's health checks send the `onrender.com` host.
-- **Cache race fixed:** gunicorn workers starting at once could race to create the cache table; that's now tolerated. A test starts 6 processes at once.
-- **Empty-map fix:** the Phase 5 legend overlapped the "Enter a trip…" hint and the spinner. Both now sit below it, and the e2e test checks for overlap.
-- **README:** Deployment section, with Render steps, environment variables and the cold-start note.
+**Live:** https://weather-truck-routing.wittywave-86ad3def.eastasia.azurecontainerapps.io (Azure Container Apps)
 
-**Not verified:** Docker isn't installed on this machine, so the image hasn't been built yet. Nothing is deployed.
-
-**Next:**
-- Build the image (locally with Docker, or in CI) and deploy the Blueprint (needs your Render account).
-- Decide on Render Key Value for a cache that survives sleeps.
-- Split the bundle.
-- Write the Loom outline.
+- **Serving:** Django serves the React build. WhiteNoise serves `frontend/dist` at `/`, and `config/spa.py` returns `index.html` (`no-cache`) for every non-API path. `/assets/*` is immutable and pre-gzipped. In production the API renders JSON only.
+- **Image:** the multi-stage `Dockerfile` is built by `.github/workflows/image.yml` on every push to `main` and published to GHCR (public, so no pull credentials). This was the first time the Dockerfile was ever built; there's no Docker on the dev machine.
+- **Render, abandoned:** creating a Blueprint requires a card, even for a free service. `render.yaml` is kept (with `autoDeployTrigger`, since `autoDeploy` is deprecated), and the README has the manual no-Blueprint route.
+- **Azure, as deployed:**
+  - The user's Azure for Students subscription only grants Contributor on one existing resource group, `rg_autox`, which holds another project (`autox`). With the user's go-ahead, our resources went into it, tagged `project=weather-truck-routing`: the Container Apps environment `wtr-env2` (Consumption only, no log workspace) and the app `weather-truck-routing` (0.5 vCPU / 1 GiB, scale 0–1, port 10000).
+  - The secrets `here-api-key` and `django-secret-key` were read and generated locally without ever being printed.
+  - Azure Container Registry was impossible (no rights to register the provider), hence GHCR.
+- **Azure lessons:**
+  - The first environment was an *express* environment: a single `--latest` revision and no revision suffixes. An environment-variable update never reached the running revision, so the app answered 400 everywhere.
+  - Recreating with `--enable-workload-profiles false` and `DJANGO_ALLOWED_HOSTS` set at creation worked first time. The express environment and the broken app were deleted, after checking their tags.
+  - The `CONTAINER_APP_NAME` + `CONTAINER_APP_ENV_DNS_SUFFIX` hostname detection is in the settings but didn't work in practice. Set `DJANGO_ALLOWED_HOSTS` explicitly.
+- **Live checks** (no HERE or Open-Meteo calls):
+  - `/api/health` returns 200 `{"status":"ok"}`.
+  - `/` and deep links return the app; assets are immutable and gzipped; unknown `/api/` paths return 404.
+  - The page boots in Chromium with no console errors, the map renders, and there's no `__map` hook.
+- **Bugs found and fixed:**
+  - **Same place:** identical From and To crashed `/api/plan` with a 500. It's now a 400 (under 1 mile apart), checked before any provider call.
+  - **Cache table race:** the race fix didn't work, because `createcachetable` re-raises database errors as `CommandError`. A 6-process test failed intermittently, which caught it.
+  - **Locked cache file:** a fresh SQLite file switching to WAL under contention gave "database is locked" (caught by looping the suite 25 times). The container now runs `manage.py createcachetable` before gunicorn starts, plus a 20 s SQLite lock timeout. After the fix: 30 of 30 runs of that test passed, then 25 of 25 full-suite runs.
+  - **Phones:** the timeline covered most of the map, and the attribution sat inside the card. Below 860 px the timeline now sits under the map, and `fitBounds` only counts overlays that float over the map.
+  - **Network failure:** it showed the browser's raw "Failed to fetch"; it now says "Couldn't reach the server…". A failed re-plan now says the routes shown are from the previous plan.
+- **Bundle:** split into the app (27 KB, 10 KB gzipped), React (78 KB gzipped) and MapLibre (286 KB gzipped). An app update re-downloads only the 10 KB part.
+- **README:**
+  - **Architecture:** a Mermaid diagram plus the planner pipeline.
+  - **Edge cases:** a table of each case and where it's tested; one case is marked as not directly tested.
+  - **Deployment:** the actual Azure steps and lessons, plus Render.
+  - **Walkthrough:** a 5-minute script for the screen recording.
+- **Tests:** 216 backend, 40 frontend unit, and 10 e2e (replay; adds `errors.spec.ts` and `mobile.spec.ts`).
 
 ## Open items
 
-- **Bundle size:** the main JS bundle is 1.3 MB (360 KB gzipped), mostly MapLibre. Split it into chunks later in Phase 6.
 - **Markers:** the A and B endpoint markers cover the city labels underneath. Small cosmetic fix.
 - **Live e2e runs:** `E2E_RECORD=1` and `E2E_LIVE=1` each cost about 350–450 Open-Meteo locations; keep them rare. The default replay run is free.
 - **Heatmap above zoom 11:** it fades out between zoom 9.5 and 11, where the blur radius gets very large. The checkpoints carry the detail there.
+- **Azure access:** the deploy lives in someone else's subscription (`rg_autox`, Contributor only). If that access is removed, the app goes down. The README's Azure commands recreate it anywhere.
+- **A live check of planning:** a real trip hasn't been planned on the deployed app; it would make live HERE and Open-Meteo calls, which need the user's go-ahead.

@@ -2,19 +2,31 @@ import type { Place, PlanRequest, PlanResponse } from './types'
 
 export class ApiError extends Error {}
 
+export const OFFLINE_MESSAGE = "Couldn't reach the server. Check your connection and try again."
+
 export async function geocode(query: string, signal?: AbortSignal): Promise<Place[]> {
-  const response = await fetch(`/api/geocode?q=${encodeURIComponent(query)}`, { signal })
+  const response = await send(`/api/geocode?q=${encodeURIComponent(query)}`, { signal })
   const body = await readJson(response)
   return (body as { results: Place[] }).results
 }
 
 export async function plan(request: PlanRequest): Promise<PlanResponse> {
-  const response = await fetch('/api/plan', {
+  const response = await send('/api/plan', {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(request),
   })
   return (await readJson(response)) as PlanResponse
+}
+
+/** fetch, with a readable message when the request never got a response (offline, connection dropped). */
+async function send(url: string, init: RequestInit): Promise<Response> {
+  try {
+    return await fetch(url, init)
+  } catch (error) {
+    if (error instanceof DOMException && error.name === 'AbortError') throw error // a superseded autosuggest query
+    throw new ApiError(OFFLINE_MESSAGE)
+  }
 }
 
 async function readJson(response: Response): Promise<unknown> {

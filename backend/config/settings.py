@@ -114,6 +114,8 @@ if CACHE_BACKEND == "sqlite":
             "NAME": CACHE_DB,
             "OPTIONS": {
                 "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+                # Wait up to 20 s for another worker's write lock rather than failing at once.
+                "timeout": 20,
                 "transaction_mode": "IMMEDIATE",
             },
         }

@@ -60,6 +60,7 @@ export default function App() {
         {planning.isError && (
           <div className="callout danger" role="alert">
             {planning.error.message}
+            {plan && <span className="callout-note"> The routes below are from your previous plan.</span>}
           </div>
         )}
 

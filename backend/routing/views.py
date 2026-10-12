@@ -8,7 +8,10 @@ from rest_framework.response import Response
 from . import services
 from .planner import NoRouteError, TripRequest, plan_trip
 from .providers.base import Place, ProviderError, RateLimitedError, RoutingProvider
+from .sampling import haversine_mi
 from .serializers import GeocodeQuerySerializer, PlanRequestSerializer
+
+MIN_TRIP_MI = 1.0  # straight-line distance between From and To
 
 
 @api_view(["GET"])
@@ -40,6 +43,13 @@ def plan(request: Request) -> Response:
             return origin
         if isinstance(destination, Response):
             return destination
+        # Checked before any routing or weather call: there's no trip to assess (and an
+        # empty route would have nothing to summarize).
+        if haversine_mi((origin.lat, origin.lon), (destination.lat, destination.lon)) < MIN_TRIP_MI:
+            return Response(
+                {"detail": f"From and To are less than {MIN_TRIP_MI:g} mile apart. Choose two different places."},
+                status=status.HTTP_400_BAD_REQUEST,
+            )
         trip = TripRequest(
             origin=origin,
             destination=destination,

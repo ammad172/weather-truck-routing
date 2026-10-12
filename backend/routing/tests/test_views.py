@@ -118,3 +118,23 @@ def test_a_used_up_hourly_quota_says_when_to_retry(client, monkeypatch, fake_pro
     assert response.status_code == 503
     assert response["Retry-After"] == "1235"
     assert "hourly limit" in response.json()["detail"]
+
+
+@pytest.mark.parametrize("offset_deg", [0.0, 0.01])  # the same point, and ~0.7 mi apart
+def test_from_and_to_at_the_same_place_is_a_clear_400(client, fake_providers, offset_deg):
+    # Same place as typed text and as coordinates: "Dallas, TX" geocodes to DALLAS.
+    near = {"lat": DALLAS[0] + offset_deg, "lon": DALLAS[1], "label": "Downtown Dallas"}
+    response = client.post("/api/plan", body(destination=near), content_type="application/json")
+    assert response.status_code == 400
+    assert "less than 1 mile apart" in response.json()["detail"]
+    assert fake_providers.calls == []  # no routing (or weather) request was made
+
+
+def test_two_miles_apart_is_a_trip(client, monkeypatch):
+    routing = FakeRouting([straight_route(DALLAS, north(DALLAS, 2), hours=0.1)])
+    monkeypatch.setattr(services, "routing_provider", lambda: routing)
+    monkeypatch.setattr(services, "weather_provider", lambda: FakeWeather())
+    destination = {"lat": north(DALLAS, 2)[0], "lon": DALLAS[1], "label": "2 mi north"}
+    response = client.post("/api/plan", body(destination=destination), content_type="application/json")
+    assert response.status_code == 200
+    assert response.json()["routes"][0]["checkpoints"]

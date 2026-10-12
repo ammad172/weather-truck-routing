@@ -195,7 +195,11 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus, hour, var
     for (const route of plan.routes) for (const point of route.geometry) bounds.extend(point)
     // Keep the routes clear of the legend (top left), and of the timeline (bottom) with the scale
     // and attribution that sit above it.
-    const overlay = (selector: string) => container.current?.parentElement?.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0
+    // Only elements that float over the map count (on phones the timeline sits below the map instead).
+    const overlay = (selector: string) => {
+      const el = container.current?.parentElement?.querySelector<HTMLElement>(selector)
+      return el && getComputedStyle(el).position === 'absolute' ? el.offsetHeight : 0
+    }
     const top = overlay('.legend') + 40
     const bottom = overlay('.timeline') + overlay('.maplibregl-ctrl-bottom-right') + 32
     map.fitBounds(bounds, { padding: { top, bottom, left: 64, right: 64 }, duration: 600 })

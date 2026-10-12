@@ -30,11 +30,15 @@
 @media (max-width: 860px) {
   .app {
     grid-template-columns: 1fr;
-    grid-template-rows: 55vh auto;
+    grid-template-rows: auto auto;
     height: auto;
   }
+  /* The map keeps its own height, and the timeline sits below it in the page instead of over it. */
   .map-area {
     order: -1;
+  }
+  .map {
+    position: relative;
     height: 55vh;
   }
   .sidebar {
@@ -238,6 +242,10 @@ button.primary:disabled {
 .callout.danger {
   background: var(--danger-soft);
   color: var(--danger);
+}
+
+.callout-note {
+  color: var(--ink-soft);
 }
 
 .callout.info {
@@ -836,11 +844,18 @@ button.play:hover {
     gap: 4px 6px;
     grid-template-columns: auto repeat(5, minmax(36px, auto));
   }
+  .timeline {
+    position: static;
+    max-width: none;
+    border-radius: 0;
+    box-shadow: none;
+    border-bottom: 1px solid var(--line);
+  }
   .timeline-head {
     flex-wrap: wrap;
   }
   .has-timeline .maplibregl-ctrl-bottom-right {
-    bottom: 176px;
+    bottom: 0;
   }
 }
 
