@@ -48,7 +48,7 @@ Up to 5 matches in the US, Canada and Mexico: `{"results": [{"label", "lat", "lo
 ```
 
 - `origin` and `destination` take either a place name, which is geocoded to its best match, or coordinates from `/api/geocode`.
-- `departure` is ISO 8601. A time with no offset is taken as UTC. It can be from 1 hour ago up to 14 days ahead.
+- `departure` is ISO 8601. A time with no offset is taken as UTC. All times in the response are UTC with an explicit offset, and the web UI converts them to the user's local timezone for display. It can be from 1 hour ago up to 14 days ahead.
 - `weight_lb` is the **load**, from 0 to 80,000 lb.
 - `interval_mi` is 10, 25 or 50.
 

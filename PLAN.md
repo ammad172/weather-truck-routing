@@ -52,6 +52,12 @@ Implementation should happen in a **new Claude Code session started from `C:\Pro
 - Map: three route lines (recommended one bold, others muted; click to select), checkpoint circles colored by level with a popup (ETA, mile, wind/rain/snow, factor), heatmap layer under the routes, legend.
 - Bottom: 0–48 h slider with timestamp and play/pause, plus a heatmap variable toggle.
 - Use the **frontend-design** plugin for the visual pass, and **context7** for current MapLibre/DRF/HERE docs.
+- **Times are always shown in the user's local timezone, never UTC.**
+  - The API sends and receives ISO 8601 timestamps with an offset, in UTC.
+  - The browser formats every ETA, forecast hour, slider label and departure with `Intl.DateTimeFormat` in its own timezone, and shows the short zone name (e.g. "2:30 PM CDT").
+  - The `datetime-local` departure input is read as local time and sent as ISO with the browser's offset.
+  - All formatting goes through one helper (`lib/time.ts`) so no component formats dates on its own.
+  - This is checked with Vitest under a fixed non-UTC zone (`TZ=America/Chicago`).
 
 ## Repo layout
 ```

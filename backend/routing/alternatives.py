@@ -9,11 +9,12 @@ If the corridor really has fewer distinct roads, fewer routes are returned
 with a note saying so, rather than padding with near-copies.
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import datetime
 
 from .geometry import destination_point, initial_bearing, overlap_ratio
-from .providers.base import ProviderRoute, RoutingProvider
+from .providers.base import ProviderError, ProviderRoute, RoutingProvider
 from .sampling import LatLon, cumulative_miles, haversine_mi, point_at_mile
 
 TARGET_ROUTES = 3
@@ -70,16 +71,31 @@ def three_routes(
         if len(kept) < TARGET_ROUTES and is_distinct(route, [c.route for c in kept]):
             kept.append(CandidateRoute(route, "provider"))
 
-    fastest = min(r.duration_s for r in found)
-    for via in via_points(found[0], origin, destination):
-        if len(kept) >= TARGET_ROUTES:
-            break
-        detours = provider.truck_routes(origin, destination, departure, gross_weight_kg, alternatives=0, via=via)
-        if not detours:
-            continue
-        detour = detours[0]
-        if detour.duration_s <= fastest * MAX_DETOUR_FACTOR and is_distinct(detour, [c.route for c in kept]):
-            kept.append(CandidateRoute(detour, "via-point"))
+    if len(kept) < TARGET_ROUTES:
+        fastest = min(r.duration_s for r in found)
+
+        def detour_via(via: LatLon) -> ProviderRoute | None:
+            # Best effort: one failed detour shouldn't sink a plan that already has routes.
+            try:
+                detours = provider.truck_routes(origin, destination, departure, gross_weight_kg, alternatives=0, via=via)
+            except ProviderError:
+                return None
+            return detours[0] if detours else None
+
+        # All detours are requested at once (one round trip instead of up to four), then
+        # judged in the same nearest-first order, so the result doesn't depend on timing.
+        vias = via_points(found[0], origin, destination)
+        with ThreadPoolExecutor(max_workers=len(vias)) as pool:
+            detours = list(pool.map(detour_via, vias))
+        for detour in detours:
+            if len(kept) >= TARGET_ROUTES:
+                break
+            if (
+                detour is not None
+                and detour.duration_s <= fastest * MAX_DETOUR_FACTOR
+                and is_distinct(detour, [c.route for c in kept])
+            ):
+                kept.append(CandidateRoute(detour, "via-point"))
 
     notes = []
     generated = sum(c.source == "via-point" for c in kept)

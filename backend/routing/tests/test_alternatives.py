@@ -1,9 +1,10 @@
+import threading
 from datetime import UTC, datetime
 
 import pytest
 
 from routing.alternatives import three_routes, via_points
-from routing.providers.base import ProviderRoute
+from routing.providers.base import ProviderError, ProviderRoute
 from routing.sampling import haversine_mi
 
 from .fakes import FakeRouting, north, straight_route
@@ -58,6 +59,35 @@ def test_absurd_detours_are_rejected_and_explained():
     result = three_routes(provider, ORIGIN, DEST, DEPART, 30000)
     assert len(result.routes) == 1
     assert "Only 1 distinct route(s)" in result.notes[-1]
+
+
+def test_detour_requests_run_concurrently():
+    # Each via request waits until all four have started. Run one after another, the
+    # first would wait alone and the barrier would time out.
+    barrier = threading.Barrier(4, timeout=5)
+
+    class WaitingRouting(FakeRouting):
+        def truck_routes(self, origin, destination, departure, gross_weight_kg, alternatives=2, via=None):
+            if via is not None:
+                barrier.wait()
+            return super().truck_routes(origin, destination, departure, gross_weight_kg, alternatives, via)
+
+    provider = WaitingRouting([direct(), bent(0.5, 4.5)], detours={"west": bent(-0.6, 4.8)})
+    result = three_routes(provider, ORIGIN, DEST, DEPART, 30000)
+    assert len(result.routes) == 3
+    assert sum(call["via"] is not None for call in provider.calls) == 4
+
+
+def test_a_failed_detour_is_skipped_not_fatal():
+    class FlakyRouting(FakeRouting):
+        def truck_routes(self, origin, destination, departure, gross_weight_kg, alternatives=2, via=None):
+            if via is not None and via[1] > origin[1]:
+                raise ProviderError("HERE routing failed (500).")
+            return super().truck_routes(origin, destination, departure, gross_weight_kg, alternatives, via)
+
+    provider = FlakyRouting([direct(), bent(0.5, 4.5)], detours={"west": bent(-0.6, 4.8)})
+    result = three_routes(provider, ORIGIN, DEST, DEPART, 30000)
+    assert [c.source for c in result.routes] == ["provider", "provider", "via-point"]
 
 
 def test_no_route_at_all():
