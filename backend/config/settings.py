@@ -28,10 +28,20 @@ if not SECRET_KEY:
         raise RuntimeError("DJANGO_SECRET_KEY must be set when DJANGO_DEBUG is off.")
     SECRET_KEY = "dev-only-insecure-key"
 
+def platform_hosts(environ) -> list[str]:
+    """The app's own public hostname, as told by the hosting platform, so it needn't be configured."""
+    hosts = []
+    # Render: e.g. weather-truck-routing.onrender.com
+    if render := environ.get("RENDER_EXTERNAL_HOSTNAME"):
+        hosts.append(render)
+    # Azure Container Apps: <app>.<environment>.<region>.azurecontainerapps.io
+    if (app := environ.get("CONTAINER_APP_NAME")) and (suffix := environ.get("CONTAINER_APP_ENV_DNS_SUFFIX")):
+        hosts.append(f"{app}.{suffix}")
+    return hosts
+
+
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
-# Render sets this to the service's own hostname (e.g. weather-truck-routing.onrender.com).
-if render_host := os.environ.get("RENDER_EXTERNAL_HOSTNAME"):
-    ALLOWED_HOSTS.append(render_host)
+ALLOWED_HOSTS += platform_hosts(os.environ)
 # Render terminates TLS at its proxy and forwards plain HTTP with this header.
 SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 

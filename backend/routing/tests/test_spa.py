@@ -37,3 +37,13 @@ def test_a_missing_build_says_how_to_fix_it(client, tmp_path):
         response = client.get("/")
     assert response.status_code == 404
     assert b"npm run build" in response.content
+
+
+def test_the_platform_tells_us_our_own_hostname():
+    from config.settings import platform_hosts
+
+    assert platform_hosts({}) == []
+    assert platform_hosts({"RENDER_EXTERNAL_HOSTNAME": "wtr.onrender.com"}) == ["wtr.onrender.com"]
+    azure = {"CONTAINER_APP_NAME": "weather-truck-routing", "CONTAINER_APP_ENV_DNS_SUFFIX": "happy-sea-123.eastus.azurecontainerapps.io"}
+    assert platform_hosts(azure) == ["weather-truck-routing.happy-sea-123.eastus.azurecontainerapps.io"]
+    assert platform_hosts({"CONTAINER_APP_NAME": "only-the-name"}) == []
