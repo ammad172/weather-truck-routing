@@ -27,3 +27,6 @@ Thumbs.db
 
 # Provider cache (SQLite, see backend/config/settings.py)
 backend/cache.sqlite3*
+
+# Personal study notes (not published)
+docs/STUDY_GUIDE.md
