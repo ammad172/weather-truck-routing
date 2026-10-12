@@ -18,10 +18,12 @@ class ProviderError(Exception):
 class RateLimitedError(ProviderError):
     """A third-party API is rate limiting us. Worth trying again later."""
 
-    def __init__(self, message: str, retry_after: float | None = None):
+    def __init__(self, message: str, retry_after: float | None = None, retryable: bool = True):
         super().__init__(message)
         self.retry_after = retry_after
         """Seconds the provider asked us to wait, if it said."""
+        self.retryable = retryable
+        """False when a quick retry can't help (an hourly or daily quota is used up)."""
 
 
 @dataclass(frozen=True)

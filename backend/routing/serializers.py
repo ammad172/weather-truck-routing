@@ -1,8 +1,8 @@
 from datetime import timedelta
 
-from django.utils import timezone
 from rest_framework import serializers
 
+from . import clock
 from .sampling import ALLOWED_INTERVALS_MI
 
 # Open-Meteo forecasts ~15 days ahead; 13 leaves room for a long trip plus the 48 h heatmap.
@@ -49,7 +49,7 @@ class PlanRequestSerializer(serializers.Serializer):
     interval_mi = serializers.ChoiceField(choices=ALLOWED_INTERVALS_MI)
 
     def validate_departure(self, value):
-        now = timezone.now()
+        now = clock.now()
         if value < now - DEPARTURE_GRACE:
             raise serializers.ValidationError("Departure can't be in the past.")
         if value > now + MAX_DEPARTURE_AHEAD:

@@ -22,8 +22,8 @@ from typing import Protocol
 
 import httpx
 from django.core.cache import cache
-from django.utils import timezone
 
+from . import clock
 from .providers.base import ProviderError, RateLimitedError
 from .sampling import LatLon
 
@@ -39,6 +39,8 @@ BUSY_MESSAGE = (
     "The free weather service is busy (too many forecast requests in the last minute). "
     "Please wait about a minute and try again."
 )
+HOURLY_QUOTA_MESSAGE = "The free weather service's hourly limit has been reached. Please try again after the top of the hour."
+DAILY_QUOTA_MESSAGE = "The free weather service's daily limit has been reached. Please try again tomorrow (after midnight UTC)."
 WINDOW_DAYS = 3  # departure day + 2: covers a 48 h trip or the 48 h heatmap from any departure hour
 HORIZON_DAYS = 15  # Open-Meteo serves up to 23:00 UTC this many days after today's UTC date
 
@@ -83,7 +85,7 @@ class OpenMeteoClient:
         if not points:
             return []
         first, last = fetch_window(start, end)
-        last = min(last, forecast_horizon(timezone.now()))
+        last = min(last, forecast_horizon(clock.now()))
         if first > last:
             return [{} for _ in points]
 
@@ -94,6 +96,8 @@ class OpenMeteoClient:
             by_key = dict(zip(keys, points))
             batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
             limited = self._fetch_batches(batches, by_key, first, last, found)
+            if quota := next((e for _, e in limited if not e.retryable), None):
+                raise quota  # an hourly or daily limit: a retry in a few seconds can't help
             if limited:
                 # One short backoff, then retry only the rate-limited batches.
                 sleep(min(max((e.retry_after or RETRY_DELAY_S) for _, e in limited), RETRY_MAX_DELAY_S))
@@ -142,7 +146,7 @@ class OpenMeteoClient:
         except httpx.HTTPError as exc:
             raise ProviderError(f"Couldn't reach Open-Meteo ({type(exc).__name__}).") from None
         if response.status_code == 429:
-            raise RateLimitedError(BUSY_MESSAGE, retry_after=_retry_after(response))
+            raise _rate_limited(response)
         if response.status_code >= 400:
             raise ProviderError(f"Open-Meteo failed ({response.status_code}): {_reason(response)}.")
 
@@ -190,6 +194,19 @@ def _cache_key(point: LatLon, first: datetime, last: datetime) -> str:
 
 def _hour_param(t: datetime) -> str:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
+
+
+def _rate_limited(response: httpx.Response) -> RateLimitedError:
+    """Open-Meteo's 429 says which limit was hit ("Minutely/Hourly/Daily API request limit exceeded")."""
+    reason = _reason(response).lower()
+    now = clock.now().astimezone(UTC)
+    if reason.startswith("hourly"):
+        next_hour = now.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
+        return RateLimitedError(HOURLY_QUOTA_MESSAGE, retry_after=(next_hour - now).total_seconds(), retryable=False)
+    if reason.startswith("daily"):
+        tomorrow = datetime.combine(now.date() + timedelta(days=1), time(0), UTC)
+        return RateLimitedError(DAILY_QUOTA_MESSAGE, retry_after=(tomorrow - now).total_seconds(), retryable=False)
+    return RateLimitedError(BUSY_MESSAGE, retry_after=_retry_after(response))
 
 
 def _retry_after(response: httpx.Response) -> float | None:

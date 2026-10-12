@@ -5,6 +5,7 @@ from functools import cache
 import httpx
 from django.conf import settings
 
+from .http_fixtures import transport
 from .providers.base import RoutingProvider
 from .providers.here import HereClient
 from .weather import OpenMeteoClient, WeatherProvider
@@ -13,6 +14,9 @@ from .weather import OpenMeteoClient, WeatherProvider
 @cache
 def _http() -> httpx.Client:
     # One pooled client for the process; httpx.Client is thread-safe.
+    if settings.HTTP_FIXTURES:
+        # End-to-end tests: record real responses, or replay them with no network at all.
+        return httpx.Client(timeout=20, transport=transport(settings.HTTP_FIXTURES, settings.HTTP_FIXTURES_DIR, settings.HERE_API_KEY))
     return httpx.Client(timeout=20)
 
 

@@ -34,6 +34,10 @@ describe('truckPosition', () => {
     expect(truckPosition(route, at('2026-10-13T11:00:00Z'))).toEqual({ at: [0, 0], mile: 0, status: 'not-departed' })
   })
 
+  it('is still at the start at the departure instant', () => {
+    expect(truckPosition(route, at('2026-10-13T12:00:00Z'))).toEqual({ at: [0, 0], mile: 0, status: 'not-departed' })
+  })
+
   it('interpolates the mile between checkpoint ETAs', () => {
     const p = truckPosition(route, at('2026-10-13T14:00:00Z'))!
     expect(p.mile).toBe(75)

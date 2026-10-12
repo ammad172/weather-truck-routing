@@ -22,8 +22,9 @@ export function truckPosition(route: Route, time: number): TruckPosition | null 
   let mile: number
   let status: TruckPosition['status'] = 'en-route'
   if (time <= etas[0]) {
+    // Up to and including the departure instant, the truck is still at the start.
     mile = 0
-    status = time < etas[0] ? 'not-departed' : 'en-route'
+    status = 'not-departed'
   } else if (time >= etas[last]) {
     mile = totalMiles
     status = 'arrived'

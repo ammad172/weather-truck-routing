@@ -1,11 +1,13 @@
 """Django settings for the weather-aware truck routing API.
 
-The API is stateless (no models, no auth), so the database, admin and session
-apps are intentionally left out. All deploy-specific values come from the
-environment; see ``.env.example`` at the repo root.
+The API is stateless (no models, no auth), so the admin and session apps are
+intentionally left out; the only database is the SQLite provider cache. All
+deploy-specific values come from the environment; see ``.env.example`` at the
+repo root.
 """
 
 import os
+from datetime import datetime
 from pathlib import Path
 
 from dotenv import load_dotenv
@@ -54,26 +56,57 @@ TEMPLATES = [
 
 WSGI_APPLICATION = "config.wsgi.application"
 
-DATABASES: dict = {}
-
 REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "UNAUTHENTICATED_USER": None,
 }
 
-CACHES = {
-    "default": {
-        "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
-        "LOCATION": "weather-truck-routing",
-        # The default (300) is far too small: one plan caches ~400 weather locations.
-        # Entries are compact (~2 KB), so 20,000 is ~40 MB at most.
-        "OPTIONS": {"MAX_ENTRIES": 20_000},
+# The provider cache (weather 30 min, routes 1 h, geocoding 24 h; the TTLs are set where
+# each is cached). It's the only thing stored, so the "database" is just the cache.
+#   sqlite (default): a SQLite file, so the cache survives a server restart and is shared by
+#     every worker process. WAL keeps a plan's ~450 writes to ~50 ms. Note that on Render's
+#     free tier the disk is wiped when the service restarts or spins down.
+#   locmem: in-process memory only; the tests use it so each run starts empty.
+CACHE_BACKEND = os.environ.get("CACHE_BACKEND", "sqlite")
+CACHE_DB = Path(os.environ.get("CACHE_DB", BASE_DIR / "cache.sqlite3"))
+# The default (300) is far too small: one plan caches ~400 weather locations.
+# Entries are compact (~2 KB), so 20,000 is ~40 MB at most.
+CACHE_OPTIONS = {"MAX_ENTRIES": 20_000}
+
+if CACHE_BACKEND == "sqlite":
+    DATABASES = {
+        "default": {
+            "ENGINE": "django.db.backends.sqlite3",
+            "NAME": CACHE_DB,
+            "OPTIONS": {
+                "init_command": "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL;",
+                "transaction_mode": "IMMEDIATE",
+            },
+        }
     }
-}
+    # The table is created on first connection (routing/cache.py).
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "provider_cache", "OPTIONS": CACHE_OPTIONS}}
+elif CACHE_BACKEND == "locmem":
+    DATABASES: dict = {}
+    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "weather-truck-routing", "OPTIONS": CACHE_OPTIONS}}
+else:
+    raise RuntimeError(f"CACHE_BACKEND must be 'sqlite' or 'locmem', not {CACHE_BACKEND!r}.")
 
 # Third-party providers. Keys are read server-side only and never sent to the browser.
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "")
+
+# End-to-end tests only: record provider responses, or replay them with no network
+# (routing/http_fixtures.py), and freeze "now" to the recording time (routing/clock.py).
+HTTP_FIXTURES = os.environ.get("HTTP_FIXTURES", "")
+HTTP_FIXTURES_DIR = Path(os.environ.get("HTTP_FIXTURES_DIR", BASE_DIR / "e2e-fixtures"))
+FROZEN_NOW = None
+if os.environ.get("FROZEN_NOW"):
+    if not DEBUG:
+        raise RuntimeError("FROZEN_NOW is for the end-to-end tests and needs DJANGO_DEBUG on.")
+    FROZEN_NOW = datetime.fromisoformat(os.environ["FROZEN_NOW"])
+    if FROZEN_NOW.tzinfo is None:
+        raise RuntimeError("FROZEN_NOW needs a UTC offset, e.g. 2026-10-12T15:10:00+00:00.")
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

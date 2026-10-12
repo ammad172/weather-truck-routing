@@ -195,7 +195,7 @@ def test_duplicate_points_are_fetched_once():
 
 def test_window_is_clamped_to_the_forecast_horizon(monkeypatch):
     now = datetime(2026, 10, 12, 13, tzinfo=UTC)
-    monkeypatch.setattr(weather.timezone, "now", lambda: now)
+    monkeypatch.setattr(weather.clock, "now", lambda: now)
     seen = []
     start = datetime(2026, 10, 26, 20, tzinfo=UTC)
     fake_open_meteo(seen).hourly([(32.78, -96.8)], start, start + timedelta(hours=48))
@@ -203,7 +203,7 @@ def test_window_is_clamped_to_the_forecast_horizon(monkeypatch):
 
 
 def test_window_entirely_past_the_horizon_makes_no_request(monkeypatch):
-    monkeypatch.setattr(weather.timezone, "now", lambda: datetime(2026, 10, 12, 13, tzinfo=UTC))
+    monkeypatch.setattr(weather.clock, "now", lambda: datetime(2026, 10, 12, 13, tzinfo=UTC))
     seen = []
     start = datetime(2026, 10, 29, 0, tzinfo=UTC)
     assert fake_open_meteo(seen).hourly([(32.78, -96.8)], start, start) == [{}]
@@ -219,3 +219,27 @@ def test_no_points_makes_no_request():
     seen = []
     assert fake_open_meteo(seen).hourly([], TOMORROW_1PM, TOMORROW_1PM) == []
     assert seen == []
+
+
+@pytest.mark.parametrize(
+    ("reason", "message", "seconds_left"),
+    [
+        ("Hourly API request limit exceeded. Please try again in the next hour.", "hourly limit", 50 * 60),
+        ("Daily API request limit exceeded. Please try again tomorrow.", "daily limit", 10 * 3600 + 50 * 60),
+    ],
+)
+def test_hourly_and_daily_quotas_are_not_retried(no_real_sleep, monkeypatch, reason, message, seconds_left):
+    monkeypatch.setattr(weather.clock, "now", lambda: datetime(2026, 10, 12, 13, 10, tzinfo=UTC))
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json={"reason": reason, "error": True})
+
+    client = OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(handler)))
+    with pytest.raises(RateLimitedError, match=message) as raised:
+        client.hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
+    assert len(calls) == 1  # no retry: it can't help
+    assert no_real_sleep == []
+    assert not raised.value.retryable
+    assert raised.value.retry_after == seconds_left

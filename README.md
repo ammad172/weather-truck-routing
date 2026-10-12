@@ -170,7 +170,7 @@ On average a lookup moves about half that. Here's why that's an acceptable trade
 
 ### Weather call budget and caching
 
-Open-Meteo bills by **location**, not by request. The free tier allows 600 locations a minute and 10,000 a day. To stay well under the per-minute limit:
+Open-Meteo bills by **location**, not by request. The free tier allows 600 locations a minute, 5,000 an hour and 10,000 a day. To stay well under the per-minute limit:
 
 - **Budget per plan:** each plan is kept to about **450 locations**, checkpoints plus heatmap. The heatmap is sized against the checkpoints at the densest 10-mile interval, so it stays the same whichever interval is chosen (see [Heatmap](#heatmap)).
 - **Caching:** each location's forecast is cached for 30 minutes. The cached window covers the departure day plus the next 2 days, so these all reuse it:
@@ -178,8 +178,9 @@ Open-Meteo bills by **location**, not by request. The free tier allows 600 locat
   - changing the departure time within that day
   - switching the checkpoint interval
   - planning an overlapping trip
-- **Rate limits:** if Open-Meteo returns 429 anyway, the batches that succeeded are kept. The rate-limited ones get **one short backoff and retry**: 5 s, or the server's `Retry-After` up to 10 s. If that also fails, the API returns 503 with "The free weather service is busy… Please wait about a minute and try again", and the UI shows that message.
-- **Restarts:** the cache is in memory and per process. On Render's free tier it starts empty after each cold start.
+- **Rate limits:** if Open-Meteo returns 429 anyway, the batches that succeeded are kept. A per-minute limit gets **one short backoff and retry**: 5 s, or the server's `Retry-After` up to 10 s. If that also fails, the API returns 503 with "The free weather service is busy… Please wait about a minute and try again", and the UI shows that message. An **hourly or daily** limit isn't retried, because a few seconds can't help. The 503 says which limit was hit, and its `Retry-After` gives the seconds until it resets.
+- **Where the cache lives:** in a SQLite file (`backend/cache.sqlite3`, Django's database cache in WAL mode). It survives a server restart and is shared by all worker processes. Entries expire after their TTL: weather 30 minutes, routes 1 hour, geocoding 24 hours. A plan's ~450 writes take about 50 ms. Django's file cache was measured at 5.7 s for the same writes, because it lists the whole cache directory on every write. Set `CACHE_BACKEND=locmem` for an in-memory cache, which the tests use. Set `CACHE_DB` to put the file elsewhere.
+- **Render's free tier:** its disk is wiped whenever the service restarts, redeploys or spins down after 15 minutes without traffic, and free services can't attach a persistent disk. So the SQLite file helps while an instance is running, but it doesn't survive a Render sleep. Keeping the cache through sleeps would need a separate store, such as Render Key Value. See [Deployment](#deployment).
 
 Measured on Dallas → Denver, back to back within one minute, with an empty cache:
 
@@ -217,7 +218,28 @@ Before snapping, the same sequence needed about 510 locations. Repeating it a mi
 A heatmap adds up overlapping blurs, which on its own would misreport risk in two ways. The map corrects for both:
 
 - **Calibrated blur.** The blur radius is 1.5 times the grid's row spacing at every zoom, and the intensity is set so that, inside the corridor, the summed value equals the point's own level. Each risk color sits on a flat stretch of the color ramp, so the remaining ±3% ripple can't change a color. Unit tests sum MapLibre's blur numerically to check this.
-- **Hazards aren't averaged away.** Summing would dilute a lone stormy cell among clear ones by one or two bands, so a Severe cell could look Moderate. Each point therefore shows the worst level among itself and its 8 neighbours, and a ring of points just outside the corridor carries hazards on its edge. A lone hazard keeps its own color at its cell, and its drawn extent can grow by up to one cell (7–14 mi). For a safety map, that is the cautious direction.
+- **Hazards aren't averaged away.** This is the neighbour-max smoothing described next.
+
+#### Heatmap smoothing: neighbour max
+
+**The problem.** A heatmap colors each spot by the *sum* of the blurs around it. Inside a uniform area that sum equals the level (that's the calibration above). But a lone hazardous cell surrounded by clear ones is averaged with its neighbours. With the blur this map uses, it keeps only about half (48%) of its own weight, so a lone **Severe** cell draws between Moderate and High. A weather map for driving decisions must not understate a hazard.
+
+**The rule.** Before drawing, each heatmap point takes the **worst level among itself and its 8 neighbours** on the grid, for every hour and every variable. A lone hazard becomes a 3 × 3 block of that level. Blurred, the block's center keeps 99% of the hazard's weight, so it shows in its true color at its own cell.
+
+**The corridor's edge.** A cell on the edge has no neighbours outward, so its sum would still fall to about half. A ring of extra points just outside the corridor fixes that: each ring point carries the worst level of the corridor cells next to it. Ring points next to Low cells stay empty, so the clear corridor keeps its soft edge and only hazards extend past it.
+
+**Example.** On a 0.2° grid (about 14 mi), a Severe cell surrounded by Low cells:
+
+| | Drawn at the Severe cell | Drawn two cells away |
+|---|---|---|
+| Plain heatmap | between Moderate and High (0.49 on a 0–1 scale, where Moderate is 0.4, High 0.6, Severe 0.8) | Low |
+| With neighbour max | **Severe** (0.79) | Low |
+
+**The trade-off.** A hazard's drawn area grows by up to one grid cell (7–14 mi) in every direction. For a safety map, that's the cautious direction. A point with no forecast stays empty rather than borrowing a neighbour's level.
+
+**What it doesn't change.** It applies only to the heatmap picture. Route colors, checkpoints, risk miles, the recommendation and the slider's hourly strip all use each cell's own forecast.
+
+**Where it lives.** `heatSites` and `heatmapFeatures` in `frontend/src/lib/heatmap.ts`. The work runs once per plan, so the slider still only switches which precomputed hour the layer reads. `heatmap.test.ts` sums MapLibre's blur numerically and checks that a lone Severe cell reads as Severe in the middle of the corridor and on its edge, and that the clear field stays Low.
 
 ### Truck weight sent to the router
 

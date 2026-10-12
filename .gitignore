@@ -24,3 +24,6 @@ frontend/dist/
 .idea/
 Thumbs.db
 .DS_Store
+
+# Provider cache (SQLite, see backend/config/settings.py)
+backend/cache.sqlite3*

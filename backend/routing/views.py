@@ -1,3 +1,5 @@
+from math import ceil
+
 from rest_framework import status
 from rest_framework.decorators import api_view
 from rest_framework.request import Request
@@ -50,7 +52,9 @@ def plan(request: Request) -> Response:
         return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
     except RateLimitedError as exc:
         # 503 + Retry-After: the request was fine, the free weather tier is just busy right now.
-        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "60"})
+        # At least a minute; longer when an hourly or daily quota resets later than that.
+        retry_after = max(60, ceil(exc.retry_after or 0)) if not exc.retryable else 60
+        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": str(retry_after)})
     except ProviderError as exc:
         return _provider_failed(exc)
 

@@ -85,6 +85,18 @@ A running record of what each phase delivered, the decisions behind it, and what
   - **Event burst:** 200 synthetic events in one task block for about 0.7 s in the dev build. This is a stress test, not a realistic input.
 - **Tests:** 39 frontend unit tests. New `e2e/heatmap.spec.ts`, instrumented through `window.__map` (dev server only). It asserts that a fast drag and a 200-event burst cause **no** `addLayer`, `removeLayer`, `addSource`, `setData` or other paint calls besides `heatmap-weight`, and **no** network requests. The final weight matches the slider. It also covers the keyboard, play/pause and the variable toggle (exactly one call), and saves 5 screenshots. Playwright now runs with `workers: 1`, so the second spec reuses the server's weather cache.
 
+## After Phase 5: replayed e2e tests and a persistent cache
+
+- **The trigger:** repeated live e2e runs used up Open-Meteo's free **hourly** (5,000) and then **daily** (10,000) limits on 2026-10-12.
+- **E2E fixtures by default:** `npm run e2e` replays recorded HERE and Open-Meteo responses from `frontend/e2e/fixtures/` (about 1 MB), making no live calls. In replay, Django's `httpx.Client` uses a transport with no network at all (`routing/http_fixtures.py`) and a fake HERE key, and "now" is frozen to the recording time in both Django (`FROZEN_NOW`, DEBUG only) and the browser (`page.clock.setFixedTime`). HERE is stored per request, without the key; Open-Meteo is stored per location, so replay doesn't depend on batching or cache state. `E2E_RECORD=1` re-records, and `E2E_LIVE=1` runs only `live.spec.ts`, a one-plan smoke test. The e2e servers use their own ports (8001 and 5174) and never reuse a running server.
+- **Recording bug caught:** the recorder returned decompressed JSON with the original `Content-Encoding: gzip` header, so httpx tried to gunzip it again. The unit tests had used an uncompressed mock, so they missed it. A regression test now covers it.
+- **Re-plan test is now 10 → 50 mi:** the daily limit ran out before the 10 mi re-plan's ~112 extra locations could be recorded. The 50 mi plan's weather cells are a subset of the 25 mi plan's, so it's covered by the recording and exercises the same re-plan path. Switch back to 10 mi with a fresh `E2E_RECORD=1` run, if wanted.
+- **Persistent cache:** a SQLite file (`backend/cache.sqlite3`) via Django's `DatabaseCache`, in WAL mode with `synchronous=NORMAL`. The table is created on the first connection. Measured for a plan's 450 entries: set 49 ms, get 8 ms. Django's file cache took 5.7 s, because it lists the cache directory on every write. TTLs are unchanged: weather 30 min, routes 1 h, geocoding 24 h. Two subprocess tests check that the cache survives a restart and that entries expire.
+- **Render caveat:** the free tier's disk is wiped on restart, redeploy and spin-down (after 15 min idle), and free services can't attach a disk. The SQLite cache helps within a running instance, including sharing between gunicorn workers, but not across a Render sleep. That would need Render Key Value; it's a Phase 6 decision.
+- **Quota-aware 503s:** Open-Meteo's 429 body names the limit. Hourly and daily limits are no longer retried after 5 s, and the 503 now names the limit, with a `Retry-After` until it resets.
+- **Truck marker:** hidden at the departure instant, too, so it no longer covers the A marker.
+- **Tests:** 205 backend, 40 frontend unit, and 2 e2e specs (replay) all pass.
+
 ## Next: Phase 6
 
 - Dockerfile with Django and WhiteNoise serving the build, a Render deploy, the README cold-start note, and the Loom outline.
@@ -93,5 +105,5 @@ A running record of what each phase delivered, the decisions behind it, and what
 
 - **Bundle size:** the main JS bundle is 1.3 MB (371 KB gzipped), mostly MapLibre. Split chunks in Phase 6.
 - **Markers:** the A and B endpoint markers cover the city labels underneath. Small cosmetic fix.
-- **E2E rate limits:** the tests call the live APIs, and each run starts Django with a cold cache, so about 450 locations go to Open-Meteo per run. Back-to-back runs can hit the per-minute limit (a 503); wait a minute between runs.
+- **Live e2e runs:** `E2E_RECORD=1` and `E2E_LIVE=1` each cost about 350–450 Open-Meteo locations; keep them rare. The default replay run is free.
 - **Heatmap above zoom 11:** it fades out between zoom 9.5 and 11, where the blur radius gets very large. The checkpoints carry the detail there.

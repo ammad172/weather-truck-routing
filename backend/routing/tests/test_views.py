@@ -106,3 +106,15 @@ def test_geocode(client, fake_providers):
 
 def test_geocode_needs_a_query(client, fake_providers):
     assert client.get("/api/geocode", {"q": "D"}).status_code == 400
+
+
+def test_a_used_up_hourly_quota_says_when_to_retry(client, monkeypatch, fake_providers):
+    class QuotaWeather:
+        def hourly(self, points, start, end):
+            raise RateLimitedError("The free weather service's hourly limit has been reached.", retry_after=1234.5, retryable=False)
+
+    monkeypatch.setattr(services, "weather_provider", lambda: QuotaWeather())
+    response = client.post("/api/plan", body(), content_type="application/json")
+    assert response.status_code == 503
+    assert response["Retry-After"] == "1235"
+    assert "hourly limit" in response.json()["detail"]

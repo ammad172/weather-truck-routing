@@ -1,20 +1,13 @@
-import { expect, type Page, test } from '@playwright/test'
+import type { Page } from '@playwright/test'
+import { expect, planDallasToDenver, test, trackErrors } from './support.ts'
 
-// The forecast heatmap, its slider and legend. Uses the same trip as plan.spec.ts, so when both
-// run together the server answers this plan from its weather cache.
+// The forecast heatmap, its slider and legend, on the same recorded trip as plan.spec.ts.
 
 const HEATMAP = 'forecast-heatmap'
 
 type MapProbe = {
   calls: { method: string; args: unknown[] }[]
   frames: number[]
-}
-
-async function pickPlace(page: Page, label: string, query: string, expected: RegExp) {
-  const input = page.getByRole('combobox', { name: label })
-  await input.fill(query)
-  await page.getByRole('option', { name: expected }).first().click()
-  await expect(input).toHaveValue(expected)
 }
 
 /** Resolves once MapLibre has nothing left to load or render. */
@@ -31,27 +24,14 @@ const mapIdle = (page: Page) =>
 const weightExpression = (page: Page) => page.evaluate((id) => (window as any).__map.getPaintProperty(id, 'heatmap-weight'), HEATMAP)
 
 test('heatmap slider updates the layer in place, even when dragged fast', async ({ page }, testInfo) => {
-  const basemapGlyph = /tiles\.openfreemap\.org\/fonts\//
-  const errors: string[] = []
-  page.on('console', (m) => {
-    if (m.type() === 'error' && !m.text().startsWith('Failed to load resource')) errors.push(m.text().split('\n')[0])
-  })
-  page.on('pageerror', (e) => errors.push(e.message.split('\n')[0]))
-  page.on('response', (r) => {
-    if (r.status() >= 400 && !basemapGlyph.test(r.url())) errors.push(`HTTP ${r.status()} ${r.url()}`)
-  })
+  const errors = trackErrors(page)
 
   await page.goto('/')
   // Before a plan: the route legend only, no timeline.
   await expect(page.getByRole('region', { name: 'Map legend' })).toBeVisible()
   await expect(page.getByRole('region', { name: 'Forecast timeline' })).toHaveCount(0)
 
-  await pickPlace(page, 'From', 'Dallas', /Dallas, TX/)
-  await pickPlace(page, 'To', 'Denver', /Denver, CO/)
-  await page.getByLabel('Load weight').fill('42000')
-  const planned = page.waitForResponse((r) => r.url().endsWith('/api/plan'))
-  await page.getByRole('button', { name: 'Plan routes' }).click()
-  expect((await planned).status()).toBe(200)
+  await planDallasToDenver(page)
 
   const timeline = page.getByRole('region', { name: 'Forecast timeline' })
   const slider = page.getByRole('slider', { name: 'Hours after departure' })

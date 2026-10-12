@@ -1,34 +1,13 @@
-import { expect, type Page, test } from '@playwright/test'
-
-async function pickPlace(page: Page, label: string, query: string, expected: RegExp) {
-  const input = page.getByRole('combobox', { name: label })
-  await input.fill(query)
-  const option = page.getByRole('option', { name: expected }).first()
-  await option.click()
-  await expect(input).toHaveValue(expected)
-}
+import { expect, planDallasToDenver, test, trackErrors } from './support.ts'
 
 test('plan a trip and explore the routes', async ({ page }, testInfo) => {
-  // Any app error fails the test. The one exception: the third-party basemap asks for a few
-  // glyph ranges (fonts for rare scripts) that OpenFreeMap doesn't host; those 404s are harmless.
-  const basemapGlyph = /tiles\.openfreemap\.org\/fonts\//
-  const consoleErrors: string[] = []
-  page.on('console', (message) => {
-    if (message.type() === 'error' && !message.text().startsWith('Failed to load resource')) consoleErrors.push(message.text().split('\n')[0])
-  })
-  page.on('pageerror', (error) => consoleErrors.push(error.message.split('\n')[0]))
-  page.on('response', (response) => {
-    if (response.status() >= 400 && !basemapGlyph.test(response.url())) consoleErrors.push(`HTTP ${response.status()} ${response.url()}`)
-  })
+  const consoleErrors = trackErrors(page)
 
   await page.goto('/')
   await expect(page.getByRole('heading', { name: 'Weather-Aware Truck Routing' })).toBeVisible()
   await expect(page.getByText('Times are shown in your timezone (America/Chicago)')).toBeVisible()
 
-  await pickPlace(page, 'From', 'Dallas', /Dallas, TX/)
-  await pickPlace(page, 'To', 'Denver', /Denver, CO/)
-  await page.getByLabel('Load weight').fill('42000')
-  await page.getByRole('button', { name: 'Plan routes' }).click()
+  await planDallasToDenver(page)
 
   // Recommendation and route cards.
   await expect(page.getByText(/^Recommended: Route [A-C]$/)).toBeVisible()
@@ -67,15 +46,15 @@ test('plan a trip and explore the routes', async ({ page }, testInfo) => {
   await expect(popup).toContainText(/Arrives .* C[DS]T/)
   await page.screenshot({ path: testInfo.outputPath('checkpoint.png') })
 
-  // Changing the interval re-plans automatically, with more checkpoints at 10 mi.
-  // (A 503 "weather service is busy" here means Open-Meteo's free 600-locations/minute limit
-  // was hit by back-to-back cold runs, even after the server's one retry; wait a minute and re-run.)
+  // Changing the interval re-plans automatically, with about half the checkpoints at 50 mi.
+  // (50 mi rather than 10: its weather cells are all among the 25 mi plan's, so the recorded
+  // fixtures cover it without another ~110 Open-Meteo locations.)
   const replan = page.waitForResponse((r) => r.url().endsWith('/api/plan'))
-  await page.getByText('10 mi', { exact: true }).click()
+  await page.getByText('50 mi', { exact: true }).click()
   expect((await replan).status()).toBe(200)
   await expect(page.getByRole('alert')).toHaveCount(0)
-  await expect(page.locator('.trip-summary')).toContainText('checkpoint every 10 mi')
-  await expect.poll(() => rows.count()).toBeGreaterThan(at25 * 2)
+  await expect(page.locator('.trip-summary')).toContainText('checkpoint every 50 mi')
+  await expect.poll(() => rows.count()).toBeLessThan(at25 * 0.6)
 
   expect(consoleErrors).toEqual([])
 })
