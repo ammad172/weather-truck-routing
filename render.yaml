@@ -4,14 +4,19 @@ services:
     name: weather-truck-routing
     runtime: docker
     plan: free
+    region: oregon # can't be changed after creation
     dockerfilePath: ./Dockerfile
     healthCheckPath: /api/health
-    autoDeploy: false # deploy deliberately, from the dashboard
+    autoDeployTrigger: off # deploy deliberately, from the dashboard
     envVars:
       - key: DJANGO_DEBUG
         value: "0"
       - key: DJANGO_SECRET_KEY
         generateValue: true
-      # Set in the dashboard when the Blueprint is created; never committed.
+      # Render asks for this when the Blueprint is first created; it's never committed.
       - key: HERE_API_KEY
         sync: false
+      # The service's own onrender.com hostname is allowed automatically (RENDER_EXTERNAL_HOSTNAME);
+      # list any extra hostnames, such as a custom domain, here.
+      - key: DJANGO_ALLOWED_HOSTS
+        value: localhost,127.0.0.1
