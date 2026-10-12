@@ -492,33 +492,358 @@ button.primary:disabled {
   }
 }
 
+/* Legend: five columns shared by the route colours, the heatmap bar and the band values. */
 .legend {
   position: absolute;
   left: 16px;
-  bottom: 24px;
-  display: flex;
-  gap: 12px;
-  margin: 0;
-  padding: 8px 12px;
-  list-style: none;
-  background: rgb(255 255 255 / 92%);
+  top: 16px;
+  display: grid;
+  grid-template-columns: auto repeat(5, minmax(48px, auto));
+  align-items: center;
+  gap: 6px 10px;
+  padding: 10px 12px;
+  background: rgb(255 255 255 / 94%);
   border-radius: 8px;
   box-shadow: var(--shadow);
-  font-size: 0.78rem;
-  font-weight: 500;
+  font-size: 0.75rem;
 }
 
-.legend li {
+.legend ul {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.legend-key {
+  font-weight: 600;
+  color: var(--ink-soft);
+}
+
+.legend-unit {
+  margin-left: 4px;
+  font-weight: 400;
+  color: var(--muted);
+}
+
+.legend-levels li {
   display: flex;
   align-items: center;
   gap: 5px;
+  font-weight: 500;
+  white-space: nowrap;
 }
 
-.legend span {
-  width: 10px;
-  height: 10px;
-  border-radius: 50%;
+/* A short stroke, drawn like the route line it stands for. */
+.legend-line {
+  width: 14px;
+  height: 4px;
+  border-radius: 2px;
 }
+
+.legend-heat {
+  grid-column: 2 / -1;
+  display: grid;
+  grid-template-columns: subgrid;
+  row-gap: 3px;
+}
+
+.legend-bar {
+  grid-column: 1 / -1;
+  height: 10px;
+  border-radius: 5px;
+}
+
+.legend .legend-bands {
+  grid-column: 1 / -1;
+}
+
+.legend-bands li {
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+/* ---------- Forecast timeline ---------- */
+
+.timeline {
+  --thumb: 14px;
+  position: absolute;
+  left: 16px;
+  right: 16px;
+  bottom: 16px;
+  max-width: 920px;
+  margin-inline: auto;
+  padding: 12px 16px 10px;
+  background: rgb(255 255 255 / 96%);
+  border-radius: var(--radius);
+  box-shadow: var(--shadow);
+}
+
+.timeline-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+button.play {
+  flex: none;
+  display: grid;
+  place-items: center;
+  width: 36px;
+  height: 36px;
+  border: 0;
+  border-radius: 50%;
+  background: var(--accent);
+  color: #fff;
+  cursor: pointer;
+}
+
+button.play:hover {
+  background: #0a5f7b;
+}
+
+.icon-play {
+  width: 0;
+  height: 0;
+  margin-left: 3px;
+  border-left: 11px solid currentColor;
+  border-top: 7px solid transparent;
+  border-bottom: 7px solid transparent;
+}
+
+.icon-pause {
+  width: 11px;
+  height: 13px;
+  border-inline: 4px solid currentColor;
+}
+
+.timeline-readout {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  margin-right: auto;
+}
+
+.timeline-label {
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.timeline-truck {
+  font-size: 0.78rem;
+  color: var(--ink-soft);
+  font-variant-numeric: tabular-nums;
+}
+
+.variable-toggle {
+  display: flex;
+  margin: 0;
+  padding: 3px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: var(--canvas);
+}
+
+.variable-toggle label {
+  padding: 4px 12px;
+  border-radius: 6px;
+  font-size: 0.8rem;
+  font-weight: 600;
+  color: var(--ink-soft);
+  cursor: pointer;
+}
+
+.variable-toggle label.selected {
+  background: #fff;
+  color: var(--ink);
+  box-shadow: 0 1px 2px rgb(16 24 40 / 12%);
+}
+
+.variable-toggle label:has(input:focus-visible) {
+  outline: 2px solid var(--accent);
+}
+
+.variable-toggle input {
+  position: absolute;
+  opacity: 0;
+  pointer-events: none;
+}
+
+/* The rail spans exactly the thumb's travel, so hour h sits at h / hours of its width. */
+.scrubber {
+  padding-top: 16px;
+}
+
+.scrubber-rail,
+.scrubber-ticks {
+  position: relative;
+  margin-inline: calc(var(--thumb) / 2);
+}
+
+.scrubber-rail {
+  height: 22px;
+}
+
+/* One cell per hour, centred on its hour: the strip overhangs the rail by half a cell each side. */
+.hour-strip {
+  position: absolute;
+  inset: 3px calc(-50% / var(--hours)) 3px;
+  display: flex;
+  gap: 1px;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  border-radius: 4px;
+  overflow: hidden;
+}
+
+.hour-strip li {
+  flex: 1;
+  background: var(--line);
+}
+
+.arrival-mark {
+  position: absolute;
+  top: -14px;
+  bottom: 0;
+  border-left: 2px dotted var(--ink);
+  pointer-events: none;
+}
+
+.arrival-mark span {
+  position: absolute;
+  bottom: 100%;
+  left: 4px;
+  transform: translateY(12px);
+  font-size: 0.68rem;
+  font-weight: 600;
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.scrubber input[type='range'] {
+  position: absolute;
+  inset: 0 calc(var(--thumb) / -2);
+  width: calc(100% + var(--thumb));
+  height: 100%;
+  margin: 0;
+  background: transparent;
+  appearance: none;
+  cursor: pointer;
+}
+
+.scrubber input[type='range']:focus-visible {
+  outline: none;
+}
+
+.scrubber input[type='range']::-webkit-slider-runnable-track {
+  height: 100%;
+  background: transparent;
+}
+
+/* The thumb is a needle across the strip: the hour on show. */
+.scrubber input[type='range']::-webkit-slider-thumb {
+  width: var(--thumb);
+  height: 30px;
+  margin-top: -4px;
+  border: 3px solid var(--ink);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 55%);
+  box-shadow: 0 0 0 2px #fff, 0 2px 6px rgb(16 24 40 / 25%);
+  appearance: none;
+}
+
+.scrubber input[type='range']::-moz-range-thumb {
+  width: var(--thumb);
+  height: 30px;
+  box-sizing: border-box;
+  border: 3px solid var(--ink);
+  border-radius: 5px;
+  background: rgb(255 255 255 / 55%);
+  box-shadow: 0 0 0 2px #fff, 0 2px 6px rgb(16 24 40 / 25%);
+}
+
+.scrubber input[type='range']:focus-visible::-webkit-slider-thumb {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--accent);
+}
+
+.scrubber input[type='range']:focus-visible::-moz-range-thumb {
+  box-shadow: 0 0 0 2px #fff, 0 0 0 5px var(--accent);
+}
+
+.scrubber-ticks {
+  height: 18px;
+  margin-top: 6px;
+  margin-bottom: 0;
+  padding: 0;
+  list-style: none;
+  font-size: 0.72rem;
+  color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+
+.scrubber-ticks li {
+  position: absolute;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+
+.scrubber-ticks li:first-child {
+  transform: translateX(calc(var(--thumb) / -2));
+}
+
+.scrubber-ticks li:last-child {
+  transform: translateX(calc(-100% + var(--thumb) / 2));
+}
+
+/* Keep MapLibre's scale and attribution clear of the timeline. */
+.has-timeline .maplibregl-ctrl-bottom-right {
+  bottom: 140px;
+}
+
+.truck-marker {
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: var(--accent);
+  border: 3px solid #fff;
+  box-shadow: 0 0 0 1px var(--accent), var(--shadow);
+}
+
+/* Parked at A or B, the truck would cover the endpoint marker; the timeline says where it is. */
+.truck-marker[data-status='not-departed'],
+.truck-marker[data-status='arrived'] {
+  visibility: hidden;
+}
+
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  overflow: hidden;
+  clip-path: inset(50%);
+  white-space: nowrap;
+}
+
+@media (max-width: 860px) {
+  .legend {
+    font-size: 0.68rem;
+    gap: 4px 6px;
+    grid-template-columns: auto repeat(5, minmax(36px, auto));
+  }
+  .timeline-head {
+    flex-wrap: wrap;
+  }
+  .has-timeline .maplibregl-ctrl-bottom-right {
+    bottom: 176px;
+  }
+}
+
+
 
 .endpoint-marker {
   display: grid;

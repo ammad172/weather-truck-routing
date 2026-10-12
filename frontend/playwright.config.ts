@@ -6,6 +6,9 @@ const python = process.platform === 'win32' ? '.venv\\Scripts\\python.exe' : '.v
 
 export default defineConfig({
   testDir: 'e2e',
+  // One at a time: the specs plan the same trip, so the second is served from the server's weather
+  // cache instead of doubling the Open-Meteo calls (free tier: 600 locations a minute).
+  workers: 1,
   timeout: 90_000,
   expect: { timeout: 30_000 },
   use: {
@@ -14,6 +17,9 @@ export default defineConfig({
     timezoneId: 'America/Chicago',
     locale: 'en-US',
     viewport: { width: 1440, height: 900 },
+    // Headless Chromium draws WebGL in software (SwiftShader), roughly 30 ms a frame for the map.
+    // E2E_GPU=1 uses the real GPU instead, for timings closer to what users see (Windows: D3D11).
+    launchOptions: process.env.E2E_GPU ? { args: ['--use-angle=d3d11', '--enable-gpu', '--ignore-gpu-blocklist'] } : {},
   },
   webServer: [
     {

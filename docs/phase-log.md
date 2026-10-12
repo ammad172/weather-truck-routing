@@ -68,19 +68,30 @@ A running record of what each phase delivered, the decisions behind it, and what
 
 ---
 
-## Next: Phase 5, the heatmap layer, slider and legend
+## Phase 5: heatmap layer, slider and legend (2026-10-12)
 
-- **Heatmap layer:** a MapLibre `heatmap` layer below the routes. Each point carries per-hour properties `h0`…`h48`. The slider changes only the `heatmap-weight` expression (`["get", "hN"]`) through `setPaintProperty`: no `setData` and no refetch while dragging.
-- **Slider:** label it **"+N h after departure · <local time>"**, with ticks Departure, +12 h, +24 h, +36 h and +48 h. Add play/pause, plus a variable toggle for risk, wind, rain and snow.
-- **Truck position:** optionally, show where the truck is at the slider time, on the selected route, from the checkpoint ETAs.
-- **Radius:** size the heatmap radius from `heatmap.cell_deg` and the zoom, so cells blend smoothly.
-- **Legend:** heatmap colors next to the existing risk legend.
-- **Design and docs:** use the frontend-design plugin for the visual pass, and context7 for MapLibre 6 docs.
+- **Layer:** one MapLibre `heatmap` layer, created once at map load, under the basemap labels and the routes. A new plan calls `setData` once. Each feature carries `risk0`…`risk48`, `wind0`…, `rain0`…, `snow0`… as precomputed weights. The slider and the variable toggle **only** call `setPaintProperty(heatmap-weight, ["get", "<var><h>"])`.
+- **Variables:** wind, rain and snow are classified into their own risk bands (wind before the load rules). All four views share one color ramp, and the legend shows the variable's band values under the same five colors.
+- **Slider (`ForecastTimeline.tsx`):** "+N h after departure · <local time>", with ticks at Departure, +12 h, +24 h, +36 h and +48 h. It has play/pause and the Risk/Wind/Rain/Snow toggle. The track is a strip of 49 hourly cells colored by the worst level in the corridor, with a needle thumb and the selected route's "Arrives" mark.
+- **Truck position (`lib/truck.ts`):** the mile is interpolated between checkpoint ETAs, then placed along the route line. The marker is hidden while parked at A or B, and the timeline text gives the status.
+- **Legend:** one card with five aligned columns: the route colors, the heatmap bar, then the band values.
+- **Decision: calibrated blur.** MapLibre's kernel is a Gaussian with σ = radius/3. With radius = 1.5 × row spacing (exponential in zoom) and intensity = cos φ / (0.2785 × 1.5²), the corridor's density equals each point's weight, within ±3%. Each color has a flat ±0.06 stretch on the ramp, so the ripple can't change a color. Weights are scaled by cos(lat)/cos(maxLat) for Mercator row spacing.
+- **Decision: spread hazards (found from the screenshots).** At first the map stayed green while the strip said Moderate. Summing kernels dilutes a lone hazard to about 27–48% of its weight, so a lone Severe cell would draw as Moderate. Fix: each point shows the worst of its 3×3 neighbourhood, and a ghost ring outside the corridor carries edge hazards. Ghosts beside Low cells stay empty, so the corridor keeps its soft edge. Unit tests sum the kernel numerically: a lone Severe cell reads Severe, in the middle and on the edge.
+- **Overlays:** `fitBounds` padding is measured from the legend, the timeline and the lifted scale/attribution, so A and B aren't hidden.
+- **Performance (Dallas → Denver, 268 points + ghosts):**
+  - **`setPaintProperty`:** 0.1–0.3 ms synchronous.
+  - **Change on screen:** about 33 ms on a GPU (worker re-evaluation plus a frame).
+  - **Fast drag:** 260 mouse moves at one per frame, longest frame 17 ms on a GPU. Headless Chromium uses SwiftShader (about 30 ms a frame for the map alone), where the longest frame is 50–100 ms. Set `E2E_GPU=1` to run the e2e test on the real GPU.
+  - **Event burst:** 200 synthetic events in one task block for about 0.7 s in the dev build. This is a stress test, not a realistic input.
+- **Tests:** 39 frontend unit tests. New `e2e/heatmap.spec.ts`, instrumented through `window.__map` (dev server only). It asserts that a fast drag and a 200-event burst cause **no** `addLayer`, `removeLayer`, `addSource`, `setData` or other paint calls besides `heatmap-weight`, and **no** network requests. The final weight matches the slider. It also covers the keyboard, play/pause and the variable toggle (exactly one call), and saves 5 screenshots. Playwright now runs with `workers: 1`, so the second spec reuses the server's weather cache.
+
+## Next: Phase 6
+
+- Dockerfile with Django and WhiteNoise serving the build, a Render deploy, the README cold-start note, and the Loom outline.
 
 ## Open items
 
-- **Template files to delete:** `frontend/src/assets/` (3 files) and `frontend/public/icons.svg`. They're left over from the Vite template and not committed. A safety check blocked automatic deletion.
 - **Bundle size:** the main JS bundle is 1.3 MB (371 KB gzipped), mostly MapLibre. Split chunks in Phase 6.
 - **Markers:** the A and B endpoint markers cover the city labels underneath. Small cosmetic fix.
-- **E2E rate limits:** the test calls the live APIs. Back-to-back cold runs can hit Open-Meteo's per-minute limit; wait a minute between runs.
-- **Phase 6:** Dockerfile with Django and WhiteNoise serving the build, a Render deploy, the README cold-start note, and the Loom outline.
+- **E2E rate limits:** the tests call the live APIs, and each run starts Django with a cold cache, so about 450 locations go to Open-Meteo per run. Back-to-back runs can hit the per-minute limit (a 503); wait a minute between runs.
+- **Heatmap above zoom 11:** it fades out between zoom 9.5 and 11, where the blur radius gets very large. The checkpoints carry the detail there.

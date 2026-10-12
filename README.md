@@ -2,7 +2,7 @@
 
 A React + Django web app that helps a truck driver choose the safest route between two places, based on forecast weather along the way, the truck's load weight, and travel time.
 
-> **Status:** work in progress. The backend API is complete. The React UI plans trips and shows every route, its checkpoints, risk levels and ETAs (in the user's local time) on a MapLibre map. The heatmap layer with the 0–48 h slider is next. See [PLAN.md](PLAN.md).
+> **Status:** work in progress. The backend API is complete. The React UI plans trips and shows every route, its checkpoints, risk levels and ETAs (in the user's local time) on a MapLibre map, with a forecast heatmap of the corridor and a 0–48 h slider. Deployment is next. See [PLAN.md](PLAN.md).
 
 ## Backend setup
 
@@ -209,6 +209,15 @@ Before snapping, the same sequence needed about 510 locations. Repeating it a mi
 
 - **Same grid for every interval:** the grid doesn't depend on which checkpoint interval is chosen, so switching intervals reuses the cached heatmap weather.
 - **Risk:** each point and hour gets a risk level using the same thresholds and load rules as the checkpoints, so the heatmap and the route colors always agree.
+- **Variables:** the map can show overall risk, or wind, rain or snow alone. Wind, rain and snow are colored by their own risk bands (wind before the load rules), so all four views use the same five colors. The legend lists each band's values.
+- **Slider:** dragging the slider or switching the variable only changes the heatmap layer's `heatmap-weight` to another hour's property. Nothing is re-created or re-fetched. The track behind the slider shows the worst level anywhere in the corridor for each hour, and the selected route's arrival. The truck's position at the slider time is interpolated from the checkpoint ETAs.
+
+#### How the heatmap is drawn
+
+A heatmap adds up overlapping blurs, which on its own would misreport risk in two ways. The map corrects for both:
+
+- **Calibrated blur.** The blur radius is 1.5 times the grid's row spacing at every zoom, and the intensity is set so that, inside the corridor, the summed value equals the point's own level. Each risk color sits on a flat stretch of the color ramp, so the remaining ±3% ripple can't change a color. Unit tests sum MapLibre's blur numerically to check this.
+- **Hazards aren't averaged away.** Summing would dilute a lone stormy cell among clear ones by one or two bands, so a Severe cell could look Moderate. Each point therefore shows the worst level among itself and its 8 neighbours, and a ring of points just outside the corridor carries hazards on its edge. A lone hazard keeps its own color at its cell, and its drawn extent can grow by up to one cell (7–14 mi). For a safety map, that is the cautious direction.
 
 ### Truck weight sent to the router
 

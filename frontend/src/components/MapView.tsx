@@ -16,13 +16,16 @@ import 'maplibre-gl/dist/maplibre-gl.css'
 import workerUrl from 'maplibre-gl/dist/maplibre-gl-worker.mjs?url'
 import { useEffect, useRef, useState } from 'react'
 import type { Checkpoint, PlanResponse } from '../api/types'
+import { heatmapColor, heatmapFeatures, heatmapIntensity, heatmapRadius, type HeatVariable, weightProperty } from '../lib/heatmap'
 import { riskColorMatch, riskGradient, riskLabel, solidGradient } from '../lib/risk'
+import type { TruckPosition } from '../lib/truck'
 import { formatDateTime } from '../lib/time'
 
 setWorkerUrl(workerUrl)
 
 const STYLE_URL = 'https://tiles.openfreemap.org/styles/positron'
 const CHECKPOINTS = 'checkpoints'
+const HEATMAP = 'forecast-heatmap'
 const MUTED = '#8792a2'
 
 export type CheckpointFocus = { routeId: string; index: number }
@@ -32,16 +35,20 @@ type Props = {
   selectedRouteId: string | null
   onSelectRoute: (id: string) => void
   focus: CheckpointFocus | null
+  hour: number
+  variable: HeatVariable
+  truck: TruckPosition | null
 }
 
 const routeSource = (id: string) => `route-${id}`
 const casingLayer = (id: string) => `route-${id}-casing`
 const lineLayer = (id: string) => `route-${id}-line`
 
-export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) {
+export function MapView({ plan, selectedRouteId, onSelectRoute, focus, hour, variable, truck }: Props) {
   const container = useRef<HTMLDivElement>(null)
   const mapRef = useRef<MapLibreMap | null>(null)
   const popupRef = useRef<Popup | null>(null)
+  const truckRef = useRef<Marker | null>(null)
   const [loaded, setLoaded] = useState(false)
   // Layer event handlers are registered once per plan; read the latest callback through a ref.
   const onSelectRef = useRef(onSelectRoute)
@@ -61,6 +68,24 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
     map.addControl(new NavigationControl({ showCompass: false }), 'top-right')
     map.addControl(new ScaleControl({ unit: 'imperial' }), 'bottom-right')
     map.on('load', () => {
+      // The forecast heatmap sits under the basemap's labels; the routes and checkpoints go on top.
+      // It's created once: a new plan replaces its data, and the slider only changes its weight.
+      const firstLabel = map.getStyle().layers.find((layer) => layer.type === 'symbol')?.id
+      map.addSource(HEATMAP, { type: 'geojson', data: emptyCollection() })
+      map.addLayer(
+        {
+          id: HEATMAP,
+          type: 'heatmap',
+          source: HEATMAP,
+          maxzoom: 11,
+          paint: {
+            'heatmap-weight': ['get', weightProperty('risk', 0)],
+            'heatmap-color': heatmapColor(),
+            'heatmap-opacity': ['interpolate', ['linear'], ['zoom'], 9.5, 1, 11, 0],
+          },
+        },
+        firstLabel,
+      )
       map.addSource(CHECKPOINTS, { type: 'geojson', data: emptyCollection() })
       map.addLayer({
         id: CHECKPOINTS,
@@ -75,6 +100,8 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
       })
       setLoaded(true)
     })
+    // Lets the e2e test check how the slider updates the map. Dev server only.
+    if (import.meta.env.DEV) (window as unknown as { __map?: MapLibreMap }).__map = map
     popupRef.current = new Popup({ closeButton: false, closeOnClick: false, maxWidth: '260px', offset: 10 })
     mapRef.current = map
     return () => {
@@ -133,6 +160,11 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
     )
     map.getSource<GeoJSONSource>(CHECKPOINTS)?.setData({ type: 'FeatureCollection', features })
 
+    // The heatmap's grid spacing is fixed per plan, so its radius and intensity are set here.
+    map.getSource<GeoJSONSource>(HEATMAP)?.setData(heatmapFeatures(plan.heatmap))
+    map.setPaintProperty(HEATMAP, 'heatmap-radius', heatmapRadius(plan.heatmap))
+    map.setPaintProperty(HEATMAP, 'heatmap-intensity', heatmapIntensity(plan.heatmap))
+
     const showCheckpoint = (event: MapLayerMouseEvent) => {
       const props = event.features?.[0]?.properties
       const route = plan.routes.find((r) => r.id === props?.route)
@@ -150,7 +182,9 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
       }),
     )
 
+    truckRef.current = new Marker({ element: truckMarker() })
     markers.push(
+      truckRef.current,
       new Marker({ element: endpointMarker('A', 'Start') }).setLngLat([plan.request.origin.lon, plan.request.origin.lat]).addTo(map),
       new Marker({ element: endpointMarker('B', 'Destination') })
         .setLngLat([plan.request.destination.lon, plan.request.destination.lat])
@@ -159,11 +193,17 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
 
     const bounds = new LngLatBounds()
     for (const route of plan.routes) for (const point of route.geometry) bounds.extend(point)
-    map.fitBounds(bounds, { padding: 64, duration: 600 })
+    // Keep the routes clear of the legend (top left), and of the timeline (bottom) with the scale
+    // and attribution that sit above it.
+    const overlay = (selector: string) => container.current?.parentElement?.querySelector<HTMLElement>(selector)?.offsetHeight ?? 0
+    const top = overlay('.legend') + 40
+    const bottom = overlay('.timeline') + overlay('.maplibregl-ctrl-bottom-right') + 32
+    map.fitBounds(bounds, { padding: { top, bottom, left: 64, right: 64 }, duration: 600 })
 
     return () => {
       subscriptions.forEach((s) => s.unsubscribe())
       markers.forEach((m) => m.remove())
+      truckRef.current = null
       popupRef.current?.remove()
       for (const route of plan.routes) {
         if (map.getLayer(lineLayer(route.id))) map.removeLayer(lineLayer(route.id))
@@ -171,8 +211,30 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
         if (map.getSource(routeSource(route.id))) map.removeSource(routeSource(route.id))
       }
       map.getSource<GeoJSONSource>(CHECKPOINTS)?.setData(emptyCollection())
+      map.getSource<GeoJSONSource>(HEATMAP)?.setData(emptyCollection())
     }
   }, [plan, loaded])
+
+  // The slider and variable toggle: point the existing layer at another hour's weights.
+  // No new layer, no setData and no network; MapLibre re-evaluates the weights in its worker.
+  useEffect(() => {
+    const map = mapRef.current
+    if (!map || !loaded) return
+    map.setPaintProperty(HEATMAP, 'heatmap-weight', ['get', weightProperty(variable, hour)])
+  }, [hour, variable, loaded])
+
+  // The selected route's truck at the slider time. (Its marker is made with the plan, above.)
+  useEffect(() => {
+    const map = mapRef.current
+    const marker = truckRef.current
+    if (!map || !marker) return
+    if (!truck) {
+      marker.remove()
+      return
+    }
+    marker.setLngLat(truck.at).addTo(map)
+    marker.getElement().dataset.status = truck.status
+  }, [truck, plan, loaded])
 
   // Selection: the selected route is drawn on top, coloured by risk; the others are muted.
   useEffect(() => {
@@ -207,6 +269,14 @@ export function MapView({ plan, selectedRouteId, onSelectRoute, focus }: Props) 
 
 function emptyCollection(): GeoJSON.FeatureCollection {
   return { type: 'FeatureCollection', features: [] }
+}
+
+function truckMarker(): HTMLElement {
+  const el = document.createElement('div')
+  el.className = 'truck-marker'
+  el.setAttribute('aria-label', 'Truck position at the slider time')
+  el.title = 'Truck position at the slider time'
+  return el
 }
 
 function endpointMarker(letter: string, label: string): HTMLElement {

@@ -1,18 +1,26 @@
 import { useMutation } from '@tanstack/react-query'
-import { useCallback, useState } from 'react'
+import { memo, useCallback, useMemo, useState } from 'react'
 import { plan as requestPlan } from './api/client'
 import type { PlanResponse } from './api/types'
+import { ForecastTimeline } from './components/ForecastTimeline'
+import { Legend } from './components/Legend'
 import { type CheckpointFocus, MapView } from './components/MapView'
-import { RoutePanel } from './components/RoutePanel'
+import { RoutePanel as RoutePanelView } from './components/RoutePanel'
 import { TripForm } from './components/TripForm'
-import { RISK_LEVELS } from './lib/risk'
+import { type HeatVariable, hourTime } from './lib/heatmap'
 import { localZoneName } from './lib/time'
+import { truckPosition } from './lib/truck'
 import './App.css'
+
+// The panel's props don't change while the slider moves, so skip re-rendering its tables.
+const RoutePanel = memo(RoutePanelView)
 
 export default function App() {
   const [plan, setPlan] = useState<PlanResponse | null>(null)
   const [selectedRouteId, setSelectedRouteId] = useState<string | null>(null)
   const [focus, setFocus] = useState<CheckpointFocus | null>(null)
+  const [hour, setHour] = useState(0)
+  const [variable, setVariable] = useState<HeatVariable>('risk')
 
   const planning = useMutation({
     mutationFn: requestPlan,
@@ -20,6 +28,7 @@ export default function App() {
       setPlan(result)
       setSelectedRouteId(result.recommendation.route_id)
       setFocus(null)
+      setHour((h) => Math.min(h, result.heatmap.hours))
     },
   })
 
@@ -27,6 +36,16 @@ export default function App() {
     setSelectedRouteId(id)
     setFocus(null)
   }, [])
+
+  const selectedRoute = plan?.routes.find((r) => r.id === selectedRouteId) ?? null
+  const truck = useMemo(
+    () => (plan && selectedRoute ? truckPosition(selectedRoute, Date.parse(hourTime(plan.heatmap, hour))) : null),
+    [plan, selectedRoute, hour],
+  )
+  const arrivalHour = useMemo(() => {
+    const arrival = selectedRoute?.checkpoints.at(-1)?.eta
+    return plan && arrival ? (Date.parse(arrival) - Date.parse(plan.heatmap.start)) / 3_600_000 : null
+  }, [plan, selectedRoute])
 
   return (
     <div className="app">
@@ -54,8 +73,16 @@ export default function App() {
         </footer>
       </aside>
 
-      <main className="map-area">
-        <MapView plan={plan} selectedRouteId={selectedRouteId} onSelectRoute={selectRoute} focus={focus} />
+      <main className={`map-area${plan ? ' has-timeline' : ''}`}>
+        <MapView
+          plan={plan}
+          selectedRouteId={selectedRouteId}
+          onSelectRoute={selectRoute}
+          focus={focus}
+          hour={hour}
+          variable={variable}
+          truck={truck}
+        />
         {planning.isPending && (
           <div className="map-overlay" role="status">
             <span className="spinner" aria-hidden="true" /> Finding routes and forecasts…
@@ -64,14 +91,19 @@ export default function App() {
         {!plan && !planning.isPending && (
           <div className="map-hint">Enter a trip to compare up to three truck routes.</div>
         )}
-        <ul className="legend" aria-label="Risk levels">
-          {RISK_LEVELS.map((r) => (
-            <li key={r.level}>
-              <span style={{ background: r.color }} aria-hidden="true" />
-              {r.label}
-            </li>
-          ))}
-        </ul>
+        <Legend variable={variable} showHeatmap={!!plan} />
+        {plan && (
+          <ForecastTimeline
+            heatmap={plan.heatmap}
+            hour={hour}
+            onHourChange={setHour}
+            variable={variable}
+            onVariableChange={setVariable}
+            arrivalHour={arrivalHour}
+            routeId={selectedRouteId}
+            truck={truck}
+          />
+        )}
       </main>
     </div>
   )
