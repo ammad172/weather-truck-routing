@@ -1,6 +1,6 @@
 # Assessment brief: kept local only, not published
 ASSIGNMENT.md
-docs/
+docs/*.pdf
 
 # Secrets
 .env

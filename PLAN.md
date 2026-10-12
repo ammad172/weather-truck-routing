@@ -36,9 +36,10 @@ Implementation should happen in a **new Claude Code session started from `C:\Pro
 5. **Recommendation:** sort routes lexicographically by `(no_travel_miles, severe_miles, high_miles, round(avg_risk, 2), duration)`. No Travel miles rank first (strictly worse than Severe), then the spec's order. Return a human-readable reason, e.g. "Route B: 0 Severe miles vs 25 on A". If every route has No Travel segments, still rank them but return a prominent warning.
 
 ## Heatmap (0–48 h slider)
-- *(Revised in Phase 3. Open-Meteo bills per location: 600 a minute and 10,000 a day on the free tier.)*
-- **Grid:** the backend fills a regular grid with every cell within 15 mi of any route. It holds at most 300 points free or 1,000 with a paid key, and the cell size grows to fit. The size doesn't depend on the checkpoint interval, so switching intervals reuses the cache.
-- **Weather fetch:** one Open-Meteo fetch covers both the checkpoints and the grid, in batches of 100 run in parallel. Each location is cached for the departure day plus 2 more.
+- *(Revised in Phase 3 and after Phase 4. Open-Meteo bills per location: 600 a minute and 10,000 a day on the free tier. No paid key.)*
+- **Shared weather grid:** every weather lookup, checkpoints and heatmap, snaps to one 0.1° grid and is de-duplicated (`grid.py`). The accuracy reasoning is in the README's "Weather grid snapping" section.
+- **Heatmap points:** every k-th grid cell within a 15→8 mi corridor of the routes. The backend picks the finest spacing, then the widest corridor, that keeps the heatmap at 300 points or fewer **and** checkpoints plus heatmap within 450 locations. Checkpoints are counted at the densest 10-mile interval, so the grid is the same for every interval and switching reuses the cache.
+- **Weather fetch:** one fetch covers both, in batches of 100 run in parallel. Each location is cached for the departure day plus 2 more. A 429 gets one short backoff and retry, then a 503 "busy, wait a minute" message.
 - **Time range:** the slider starts at the **departure hour**, not the current hour, so every frame overlaps the trip.
 - **Response format:** compact arrays (`points[]`, plus `risk[point][hour]`, wind, rain and snow), gzip-compressed.
 - **Slider label:** label the slider as **hours after departure**, e.g. "+12 h after departure · Tue 1:00 AM CDT". The track ticks read "Departure", "+12 h", "+24 h", "+36 h" and "+48 h".

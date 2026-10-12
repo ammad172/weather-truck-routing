@@ -4,7 +4,7 @@ import pytest
 from django.utils import timezone
 
 from routing import services
-from routing.providers.base import ProviderError
+from routing.providers.base import ProviderError, RateLimitedError
 
 from .fakes import FakeRouting, FakeWeather, north, straight_route
 
@@ -84,6 +84,18 @@ def test_provider_failure_is_a_502_with_a_readable_message(client, monkeypatch):
     response = client.post("/api/plan", body(), content_type="application/json")
     assert response.status_code == 502
     assert response.json() == {"detail": "HERE routing rejected the API key."}
+
+
+def test_rate_limit_after_retry_is_a_503_with_retry_after(client, monkeypatch, fake_providers):
+    class BusyWeather:
+        def hourly(self, points, start, end):
+            raise RateLimitedError("The free weather service is busy. Please wait about a minute and try again.")
+
+    monkeypatch.setattr(services, "weather_provider", lambda: BusyWeather())
+    response = client.post("/api/plan", body(), content_type="application/json")
+    assert response.status_code == 503
+    assert response["Retry-After"] == "60"
+    assert "wait about a minute" in response.json()["detail"]
 
 
 def test_geocode(client, fake_providers):

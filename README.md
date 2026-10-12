@@ -83,6 +83,7 @@ Errors:
 | 400 | Invalid input, or a place name that can't be found |
 | 422 | No truck route exists between the two places |
 | 502 | HERE or Open-Meteo failed. The message is safe to show and never includes the API key. |
+| 503 | Open-Meteo's free tier is rate-limiting us even after one retry. The response says to wait about a minute and includes `Retry-After: 60`. |
 
 ## Assumptions
 
@@ -140,36 +141,73 @@ To keep tiny rounding differences from deciding the result, miles are compared t
 
 - Weather comes from Open-Meteo's hourly forecast, in mph and inches to match the thresholds.
 - Rain uses Open-Meteo's `rain`, which excludes snow. Snow uses `snowfall`, which is snow depth rather than water equivalent. Both are totals for the hour before the timestamp, so they read directly as in/hr.
-- Checkpoints within about 1 km of each other share one forecast. Open-Meteo's grid is coarser than that anyway.
+- Every weather lookup is snapped to a shared 0.1° grid. See [Weather grid snapping](#weather-grid-snapping).
 - If a forecast value is missing, that checkpoint counts as Low and the response adds a note saying so.
-- Open-Meteo's free API is for non-commercial use. A production deployment would need their paid plan. Set `OPEN_METEO_API_KEY` to use it; that also allows a finer heatmap grid.
+- Open-Meteo's free API is for non-commercial use. A production deployment would need their paid plan.
+
+### Weather grid snapping
+
+Every weather lookup, checkpoints and heatmap alike, is snapped to the centre of the nearest cell on one shared **0.1° grid**, and duplicates are removed before anything is fetched. Each checkpoint's response includes `weather_cell`, the `[lon, lat]` of the cell whose forecast it used.
+
+**Why:** Open-Meteo bills per location (see the next section). With snapping:
+- Checkpoints reuse heatmap cells.
+- The three routes share cells where they overlap.
+- Switching the checkpoint interval mostly hits cells that are already cached. Every 50-mile checkpoint is also a 25-mile one, in the same cell.
+
+**Accuracy:** snapping moves each lookup by at most half a cell diagonally:
+
+| Latitude | Cell size (lat × lon) | Furthest a lookup can move |
+|---|---|---|
+| 35°N | about 6.9 × 5.7 mi | about 4.5 mi (7 km) |
+| 45°N | about 6.9 × 4.9 mi | about 4.2 mi |
+
+On average a lookup moves about half that. Here's why that's an acceptable trade:
+
+- **The forecast itself is on a grid.** Open-Meteo returns the value for the model grid cell that contains the point. In the US that's about 3 km for the first day or two (NOAA's HRRR model) and about 13 km after that (GFS). So a raw point query already reads a model cell, not the exact location. A 4-mile shift changes the result only near a cell edge, and at most to the next cell over.
+- **A checkpoint already stands for a long stretch of road.** It covers half the gap to each neighbour: 5 to 25 miles either side, depending on the interval. A 4-mile shift is small next to that.
+- **Timing is a bigger source of error.** The forecast hour is rounded to the nearest hour from the ETA. That's up to ±30 minutes, which is about ±30 miles at highway speed.
+- **What can be missed:** features smaller than a few miles, such as one thunderstorm cell, can fall just outside a snapped point. Forecasts can't place those precisely at these lead times anyway.
 
 ### Weather call budget and caching
 
-Open-Meteo bills by **location**, not by request. The free tier allows 600 locations a minute and 10,000 a day. A cold Dallas → Denver plan uses about 330 locations at a 25-mile interval and about 470 at 10 miles. To keep the demo responsive:
+Open-Meteo bills by **location**, not by request. The free tier allows 600 locations a minute and 10,000 a day. To stay well under the per-minute limit:
 
-- Each location's forecast is cached for 30 minutes. The cached window covers the departure day plus the next 2 days, so these all reuse it:
+- **Budget per plan:** each plan is kept to about **450 locations**, checkpoints plus heatmap. The heatmap is sized against the checkpoints at the densest 10-mile interval, so it stays the same whichever interval is chosen (see [Heatmap](#heatmap)).
+- **Caching:** each location's forecast is cached for 30 minutes. The cached window covers the departure day plus the next 2 days, so these all reuse it:
   - re-running a trip
   - changing the departure time within that day
   - switching the checkpoint interval
   - planning an overlapping trip
-- Measured on the same trip:
+- **Rate limits:** if Open-Meteo returns 429 anyway, the batches that succeeded are kept. The rate-limited ones get **one short backoff and retry**: 5 s, or the server's `Retry-After` up to 10 s. If that also fails, the API returns 503 with "The free weather service is busy… Please wait about a minute and try again", and the UI shows that message.
+- **Restarts:** the cache is in memory and per process. On Render's free tier it starts empty after each cold start.
 
-  | Action | Time |
-  |---|---|
-  | First plan | 3.1 s |
-  | Switch to a 10-mile interval | 1.0 s |
-  | Switch to 50 miles | 0.6 s |
-  | Re-run | 0.6 s |
+Measured on Dallas → Denver, back to back within one minute, with an empty cache:
 
-- If Open-Meteo rate-limits a request, the batches that did succeed are still cached, and the API returns "Try again in a minute".
-- The cache is in memory and per process. On Render's free tier it starts empty after each cold start.
+| Action | Time | Locations in plan (shared) | New fetches | Total in the minute |
+|---|---|---|---|---|
+| First plan, 25 mi | 3.4 s | 342 (17) | 342 | 342 |
+| Switch to 10 mi | 0.9 s | 439 (52) | 112 | 454 |
+| Switch to 50 mi | 0.6 s | 302 (10) | 0 | 454 |
+| Back to 25 mi | 0.6 s | 342 (17) | 0 | 454 |
+
+Before snapping, the same sequence needed about 510 locations. Repeating it a minute later could hit the limit.
 
 ### Heatmap
 
 - **Time range:** the slider runs from the **departure hour** (+0 h) to 48 hours later. That way, every frame overlaps the trip, even for a departure several days ahead. If the user leaves now, this is the same as a forecast that starts now.
-- **Area:** every grid cell whose centre is within 15 miles of any of the routes, plus the cell under each route point. The map's heatmap blur shows color beyond that.
-- **Grid:** regular, with 300 points at most on the free tier (1,000 with a paid key). The cell size grows to fit: about 7 miles on short trips, about 17 miles on Dallas → Denver. The grid doesn't depend on the checkpoint interval, so switching intervals reuses the cached heatmap weather.
+- **Points:** heatmap points are cells of the shared 0.1° grid, every 1st, 2nd or 3rd cell and so on. They cover every cell within a corridor radius of any route, plus the cell under each route point. The map's heatmap blur shows color beyond that.
+- **Size:** the backend picks the finest spacing, then the widest corridor (15 mi narrowing to 8 mi), that fits both limits:
+  - at most 300 heatmap points, and
+  - checkpoints plus heatmap within the 450-location budget, counting checkpoints at the 10-mile interval.
+
+  Results:
+
+  | Trip | Spacing | Corridor | Points |
+  |---|---|---|---|
+  | Short trips | 0.1° (about 7 mi) | 15 mi | |
+  | Dallas → Denver | 0.2° (about 14 mi) | 10 mi | 268 |
+
+- **Same grid for every interval:** the grid doesn't depend on which checkpoint interval is chosen, so switching intervals reuses the cached heatmap weather.
 - **Risk:** each point and hour gets a risk level using the same thresholds and load rules as the checkpoints, so the heatmap and the route colors always agree.
 
 ### Truck weight sent to the router
@@ -186,11 +224,13 @@ If no detour qualifies, fewer routes are shown and the response explains why. Ge
 
 ## Limitations
 
-- **Heatmap resolution depends on trip length and the weather plan.** On Open-Meteo's free tier the heatmap grid is capped at 300 points, so the cells get larger as the corridor gets longer:
+- **Heatmap resolution depends on trip length.** Open-Meteo's free tier limits how many locations a plan can afford, so longer corridors get coarser heatmaps:
 
-  | Trip | Cell size | Points |
-  |---|---|---|
-  | Short trip | about 7 mi | |
-  | Dallas → Denver, 800 mi with three diverging routes | about 17 mi | 239 |
+  | Trip | Spacing | Corridor | Points |
+  |---|---|---|---|
+  | Short trip | about 7 mi | 15 mi | |
+  | Dallas → Denver, 800 mi with three diverging routes | about 14 mi | 10 mi | 268 |
 
-  Weather features smaller than a cell, such as a single thunderstorm cell or a narrow snow band, get averaged into the surrounding area. With a paid Open-Meteo key (`OPEN_METEO_API_KEY`), the cap rises to 1,000 points. That gives about 8-mile cells on the same trip with no code change. Checkpoint risk, which drives the recommendation, isn't affected: each checkpoint gets its own forecast at its exact location.
+  Weather features smaller than a cell, such as a single thunderstorm cell or a narrow snow band, get averaged into the surrounding area. Checkpoint risk, which drives the recommendation, is affected much less: each checkpoint uses the 0.1° cell nearest to it. See [Weather grid snapping](#weather-grid-snapping).
+- **Very long trips at a 10-mile interval.** Three coast-to-coast routes at 10 miles have more checkpoint cells than the free tier allows per minute. For those trips the heatmap drops to its minimum (100 points), and the plan may still return the "busy, try again in a minute" message. A 25- or 50-mile interval works.
+- **Back-to-back new trips.** Two or three completely new trips planned within one minute can still exceed the free tier's per-minute limit. The one automatic retry covers short bursts. Beyond that, the user sees the "wait about a minute" message rather than a broken page.

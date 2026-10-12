@@ -15,6 +15,15 @@ class ProviderError(Exception):
     """A third-party API failed. The message is safe to show to users (no keys or URLs)."""
 
 
+class RateLimitedError(ProviderError):
+    """A third-party API is rate limiting us. Worth trying again later."""
+
+    def __init__(self, message: str, retry_after: float | None = None):
+        super().__init__(message)
+        self.retry_after = retry_after
+        """Seconds the provider asked us to wait, if it said."""
+
+
 @dataclass(frozen=True)
 class Place:
     label: str

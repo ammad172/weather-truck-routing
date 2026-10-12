@@ -5,7 +5,7 @@ import pytest
 from django.utils import timezone
 
 from routing import weather
-from routing.providers.base import ProviderError
+from routing.providers.base import ProviderError, RateLimitedError
 from routing.weather import HourlyWeather, OpenMeteoClient, fetch_window, forecast_horizon, parse_forecasts
 
 from .conftest import load_fixture
@@ -53,17 +53,29 @@ def test_fetch_window_is_whole_days_and_at_least_three():
     )
 
 
-def fake_open_meteo(seen: list, status: int = 200, body=None, api_key: str = ""):
+@pytest.fixture(autouse=True)
+def no_real_sleep(monkeypatch):
+    """Record backoff delays instead of sleeping."""
+    delays: list[float] = []
+    monkeypatch.setattr(weather, "sleep", delays.append)
+    return delays
+
+
+def ok_response(request: httpx.Request) -> httpx.Response:
+    lats = request.url.params["latitude"].split(",")
+    hour = request.url.params["start_hour"]
+    location = {"hourly": {"time": [hour], "wind_speed_10m": [12.0], "rain": [0.1], "snowfall": [0.0]}}
+    return httpx.Response(200, json=[location] * len(lats) if len(lats) > 1 else location)
+
+
+def fake_open_meteo(seen: list, status: int = 200, body=None):
     def handler(request: httpx.Request) -> httpx.Response:
         seen.append(request)
         if status != 200:
             return httpx.Response(status, json=body or {})
-        lats = request.url.params["latitude"].split(",")
-        hour = request.url.params["start_hour"]
-        location = {"hourly": {"time": [hour], "wind_speed_10m": [12.0], "rain": [0.1], "snowfall": [0.0]}}
-        return httpx.Response(200, json=[location] * len(lats) if len(lats) > 1 else location)
+        return ok_response(request)
 
-    return OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(handler)), api_key=api_key)
+    return OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(handler)))
 
 
 def test_points_are_batched_and_order_is_kept():
@@ -123,13 +135,55 @@ def test_successful_batches_are_cached_even_if_another_batch_fails():
     client = OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(handler)))
     first_batch = [(30 + i * 0.01, -97.0) for i in range(100)]
     second_batch = [(40 + i * 0.01, -97.0) for i in range(100)]
-    with pytest.raises(ProviderError, match="rate limit"):
+    with pytest.raises(RateLimitedError):
         client.hourly(first_batch + second_batch, TOMORROW_1PM, TOMORROW_1PM)
+    assert len(calls) == 3  # both batches, then one retry of the rate-limited one
     calls.clear()
-    with pytest.raises(ProviderError):
+    with pytest.raises(RateLimitedError):
         client.hourly(first_batch + second_batch, TOMORROW_1PM, TOMORROW_1PM)
-    assert len(calls) == 1  # only the batch that failed is retried
-    assert calls[0].url.params["latitude"].startswith("40")
+    assert len(calls) == 2  # the first batch is cached; only the second is tried (and retried)
+    assert all(c.url.params["latitude"].startswith("40") for c in calls)
+
+
+def test_one_backoff_and_retry_recovers_from_a_429(no_real_sleep):
+    calls = []
+
+    def handler(request):
+        calls.append(request)
+        return httpx.Response(429, json={}) if len(calls) == 1 else ok_response(request)
+
+    client = OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(handler)))
+    forecasts = client.hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
+    assert len(calls) == 2
+    assert no_real_sleep == [weather.RETRY_DELAY_S]
+    assert forecasts[0][TOMORROW_1PM.replace(hour=0)].wind_mph == 12.0
+
+
+def test_backoff_honours_retry_after_up_to_a_cap(no_real_sleep):
+    for header, expected in (("2", 2.0), ("120", weather.RETRY_MAX_DELAY_S)):
+        no_real_sleep.clear()
+        responses = iter([httpx.Response(429, headers={"Retry-After": header}, json={})])
+        client = OpenMeteoClient(
+            http=httpx.Client(transport=httpx.MockTransport(lambda r: next(responses, None) or ok_response(r)))
+        )
+        client.hourly([(32.78, -96.8 + float(header))], TOMORROW_1PM, TOMORROW_1PM)
+        assert no_real_sleep == [expected]
+
+
+def test_still_rate_limited_after_the_retry_gives_a_clear_message(no_real_sleep):
+    seen = []
+    with pytest.raises(RateLimitedError, match="busy .* wait about a minute"):
+        fake_open_meteo(seen, status=429).hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
+    assert len(seen) == 2  # exactly one retry
+    assert len(no_real_sleep) == 1
+
+
+def test_other_errors_are_not_retried(no_real_sleep):
+    seen = []
+    with pytest.raises(ProviderError):
+        fake_open_meteo(seen, status=500).hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
+    assert len(seen) == 1
+    assert no_real_sleep == []
 
 
 def test_duplicate_points_are_fetched_once():
@@ -156,29 +210,9 @@ def test_window_entirely_past_the_horizon_makes_no_request(monkeypatch):
     assert seen == []
 
 
-def test_rate_limit_has_a_friendly_message():
-    with pytest.raises(ProviderError, match="Try again in a minute"):
-        fake_open_meteo([], status=429).hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
-
-
 def test_http_error_becomes_provider_error():
     with pytest.raises(ProviderError, match="Bad hour"):
         fake_open_meteo([], status=400, body={"reason": "Bad hour"}).hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
-
-
-def test_paid_key_uses_the_customer_endpoint_and_never_leaks():
-    seen = []
-    fake_open_meteo(seen, api_key="paid-key-xyz").hourly([(32.78, -96.8)], TOMORROW_1PM, TOMORROW_1PM)
-    assert seen[0].url.host == "customer-api.open-meteo.com"
-    assert seen[0].url.params["apikey"] == "paid-key-xyz"
-
-    def boom(request):
-        raise httpx.ConnectError(f"failed to connect to {request.url}")
-
-    client = OpenMeteoClient(http=httpx.Client(transport=httpx.MockTransport(boom)), api_key="paid-key-xyz")
-    with pytest.raises(ProviderError) as err:
-        client.hourly([(40.0, -100.0)], TOMORROW_1PM, TOMORROW_1PM)
-    assert "paid-key-xyz" not in str(err.value)
 
 
 def test_no_points_makes_no_request():

@@ -2,12 +2,13 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from routing.planner import FREE_HEATMAP_POINTS, NoRouteError, TripRequest, gross_weight_kg, plan_trip, time_profile
+from routing import heatmap
+from routing.planner import NoRouteError, TripRequest, gross_weight_kg, plan_trip, time_profile
 from routing.providers.base import Place
 from routing.sampling import cumulative_miles
 from routing.weather import HourlyWeather
 
-from .fakes import FakeRouting, FakeWeather, north, straight_route
+from .fakes import FakeRouting, FakeWeather, RecordingWeather, north, straight_route
 
 DEPART = datetime(2026, 10, 13, 13, 0, tzinfo=UTC)
 ORIGIN = (35.0, -100.0)
@@ -63,21 +64,44 @@ def test_etas_and_forecast_hours_follow_the_route():
     assert [c["forecast_hour"][11:16] for c in checkpoints] == ["13:00", "14:00", "14:00", "15:00", "15:00"]
 
 
-def test_checkpoints_and_heatmap_share_one_weather_fetch():
+def test_checkpoints_and_heatmap_share_one_deduplicated_weather_fetch():
     weather = FakeWeather()
     result = plan_trip(trip(interval=25), two_routes(), weather)
     assert len(weather.requests) == 1
     points, start, end = weather.requests[0]
-    assert points == 10 + len(result["heatmap"]["points"])  # 5 checkpoints x 2 routes + the corridor grid
+    checkpoint_cells = {tuple(c["weather_cell"]) for r in result["routes"] for c in r["checkpoints"]}
+    heatmap_cells = {tuple(p) for p in result["heatmap"]["points"]}
+    assert checkpoint_cells & heatmap_cells  # checkpoints reuse heatmap cells...
+    assert points == len(checkpoint_cells | heatmap_cells)  # ...and each cell is fetched once
     assert start == DEPART
     assert end == DEPART + timedelta(hours=48)  # the slider's last frame
+
+
+def test_checkpoint_weather_is_snapped_to_the_shared_grid():
+    result = plan_trip(trip(interval=10), two_routes(), FakeWeather())
+    for checkpoint in result["routes"][0]["checkpoints"]:
+        lon, lat = checkpoint["weather_cell"]
+        assert (lat, lon) == (round(lat, 1), round(lon, 1))  # a cell centre on the 0.1-degree lattice
+        assert abs(lat - checkpoint["lat"]) <= 0.05 + 1e-9  # ...and the nearest one
+        assert abs(lon - checkpoint["lon"]) <= 0.05 + 1e-9
+
+
+def test_switching_interval_reuses_weather_cells():
+    def requested(interval: int) -> set:
+        weather = RecordingWeather()
+        plan_trip(trip(interval=interval), two_routes(), weather)
+        return weather.points
+
+    at_25, at_50, at_10 = requested(25), requested(50), requested(10)
+    assert at_50 <= at_25  # every 50-mile checkpoint is also a 25-mile one, in the same cell
+    assert len(at_10 - at_25) < len(at_10) / 2  # most of the 10-mile plan is already cached
 
 
 def test_heatmap_starts_at_the_departure_hour():
     result = plan_trip(trip(departure=DEPART + timedelta(minutes=40)), two_routes(), FakeWeather())
     heat = result["heatmap"]
     assert heat["start"] == "2026-10-13T13:00:00+00:00"
-    assert 0 < len(heat["points"]) <= FREE_HEATMAP_POINTS
+    assert 0 < len(heat["points"]) <= heatmap.MAX_POINTS
     assert all(len(row) == 49 and None not in row for row in heat["risk"])
 
 
@@ -87,11 +111,15 @@ def test_heatmap_grid_does_not_depend_on_the_checkpoint_interval():
     assert grids[10] == grids[25] == grids[50]
 
 
-def test_heatmap_size_is_capped():
-    long_north = FakeRouting([straight_route(ORIGIN, north(ORIGIN, 900), hours=14.0)])
-    heat = plan_trip(trip(), long_north, FakeWeather(), heatmap_points=120)["heatmap"]
-    assert len(heat["points"]) <= 120
-    assert heat["cell_deg"] > 0.1
+@pytest.mark.parametrize("interval", [10, 25, 50])
+def test_weather_locations_per_plan_stay_within_budget(interval):
+    three_long = FakeRouting(
+        [straight_route((ORIGIN[0], ORIGIN[1] + dx), north((ORIGIN[0], ORIGIN[1] + dx), 900), hours=14.0) for dx in (-0.6, 0, 0.6)]
+    )
+    weather = FakeWeather()
+    heat = plan_trip(trip(interval=interval), three_long, weather)["heatmap"]
+    assert weather.requests[0][0] <= heatmap.LOCATION_BUDGET
+    assert heat["cell_deg"] > 0.1  # a long corridor needs coarser heatmap spacing to fit
 
 
 def test_heatmap_shows_the_storm_east_of_the_routes():
@@ -139,7 +167,7 @@ def test_response_shape():
     lon, lat = route["geometry"][0]
     assert (lat, lon) == pytest.approx((ORIGIN[0], ORIGIN[1] + 0.25))
     assert set(route["checkpoints"][0]) == {
-        "mile", "segment_miles", "lat", "lon", "eta", "forecast_hour", "weather",
+        "mile", "segment_miles", "lat", "lon", "eta", "forecast_hour", "weather_cell", "weather",
         "level", "level_label", "factor", "load_adjusted",
     }
 

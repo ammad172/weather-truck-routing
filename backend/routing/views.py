@@ -5,7 +5,7 @@ from rest_framework.response import Response
 
 from . import services
 from .planner import NoRouteError, TripRequest, plan_trip
-from .providers.base import Place, ProviderError, RoutingProvider
+from .providers.base import Place, ProviderError, RateLimitedError, RoutingProvider
 from .serializers import GeocodeQuerySerializer, PlanRequestSerializer
 
 
@@ -45,9 +45,12 @@ def plan(request: Request) -> Response:
             weight_lb=data["weight_lb"],
             interval_mi=data["interval_mi"],
         )
-        return Response(plan_trip(trip, routing, services.weather_provider(), services.heatmap_points()))
+        return Response(plan_trip(trip, routing, services.weather_provider()))
     except NoRouteError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
+    except RateLimitedError as exc:
+        # 503 + Retry-After: the request was fine, the free weather tier is just busy right now.
+        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": "60"})
     except ProviderError as exc:
         return _provider_failed(exc)
 

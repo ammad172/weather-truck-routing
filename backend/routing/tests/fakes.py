@@ -49,6 +49,17 @@ class FakeRouting:
         return [self.detours[side]] if side in self.detours else []
 
 
+class RecordingWeather:
+    """Calm weather everywhere; remembers every point it was asked for."""
+
+    def __init__(self):
+        self.points: set = set()
+
+    def hourly(self, points, start, end):
+        self.points.update(points)
+        return FakeWeather().hourly(points, start, end)
+
+
 class FakeWeather:
     """Calm everywhere, except chosen conditions east of a longitude (to make one route risky)."""
 

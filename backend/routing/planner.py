@@ -12,7 +12,8 @@ from .geometry import simplify
 from .providers.base import Place, ProviderRoute, RoutingProvider
 from .recommend import RouteSummary, recommend, summarize_route
 from .risk import RiskLevel, assess
-from .sampling import Checkpoint, cumulative_miles, sample_checkpoints
+from .grid import Cell, cell_of, center
+from .sampling import ALLOWED_INTERVALS_MI, Checkpoint, cumulative_miles, sample_checkpoints
 from .weather import HourlyWeather, WeatherProvider
 
 METERS_PER_MILE = 1609.344
@@ -20,14 +21,9 @@ KG_PER_LB = 0.45359237
 # HERE routes on the truck's *gross* weight (bridge and road limits), but the
 # user enters the *load*. A typical empty tractor-trailer weighs ~35,000 lb.
 TRACTOR_TRAILER_TARE_LB = 35_000
-# Points closer than this share one weather lookup (~1 km; finer than the forecast grid).
-WEATHER_ROUNDING = 2
-# Heatmap grid size. Open-Meteo meters each location as a call and the free tier allows
-# 600/minute: 300 grid points + checkpoints (~100 at 25 mi, ~250 at 10 mi) stays under it.
-# The size doesn't depend on the checkpoint interval, so switching interval reuses the
-# cached heatmap and only fetches the new checkpoints.
-FREE_HEATMAP_POINTS = 300
-PAID_HEATMAP_POINTS = 1000
+# The heatmap is sized against the checkpoints at the densest interval, so its grid (and
+# its cached forecasts) don't change when the user switches interval.
+DENSEST_INTERVAL_MI = min(ALLOWED_INTERVALS_MI)
 
 
 class NoRouteError(Exception):
@@ -56,12 +52,7 @@ def time_profile(route: ProviderRoute, cum: list[float]) -> TimeProfile:
     return TimeProfile(miles=tuple(miles), seconds=tuple(seconds))
 
 
-def plan_trip(
-    trip: TripRequest,
-    routing: RoutingProvider,
-    weather: WeatherProvider,
-    heatmap_points: int = FREE_HEATMAP_POINTS,
-) -> dict:
+def plan_trip(trip: TripRequest, routing: RoutingProvider, weather: WeatherProvider) -> dict:
     origin = (trip.origin.lat, trip.origin.lon)
     destination = (trip.destination.lat, trip.destination.lon)
     route_set = three_routes(routing, origin, destination, trip.departure, gross_weight_kg(trip.weight_lb))
@@ -77,14 +68,21 @@ def plan_trip(
         planned.append((candidate, checkpoints, etas))
 
     # 2. One weather fetch for every checkpoint on every route *and* the heatmap corridor,
-    #    covering the checkpoints' forecast hours and the 48 h slider from departure.
-    checkpoint_points = {_weather_key(c) for _, checkpoints, _ in planned for c in checkpoints}
-    grid = heatmap.corridor([c.route.coords for c in route_set.routes], max_points=heatmap_points)
+    #    covering the checkpoints' forecast hours and the 48 h slider from departure. All
+    #    lookups are snapped to the shared 0.1-degree grid and de-duplicated (see grid.py).
+    route_coords = [c.route.coords for c in route_set.routes]
+    checkpoint_cells = {_cell(c) for _, checkpoints, _ in planned for c in checkpoints}
+    densest = (
+        checkpoint_cells
+        if trip.interval_mi == DENSEST_INTERVAL_MI
+        else {_cell(c) for coords in route_coords for c in sample_checkpoints(coords, DENSEST_INTERVAL_MI)}
+    )
+    grid = heatmap.corridor(route_coords, reserved=densest)
     slider_start = trip.departure.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
-    points = sorted(checkpoint_points | set(grid.points))
+    cells = sorted(checkpoint_cells | set(grid.cells))
     hours = [nearest_forecast_hour(t) for _, _, etas in planned for t in etas]
     hours += [slider_start, slider_start + timedelta(hours=heatmap.HOURS)]
-    forecasts = dict(zip(points, weather.hourly(points, min(hours), max(hours))))
+    forecasts = dict(zip(cells, weather.hourly([center(c) for c in cells], min(hours), max(hours))))
 
     # 3. Risk at each checkpoint, then per-route summaries and the recommendation.
     routes_out, summaries, missing = [], [], 0
@@ -92,7 +90,7 @@ def plan_trip(
         rows = []
         for checkpoint, eta in zip(checkpoints, etas):
             hour = nearest_forecast_hour(eta)
-            conditions = forecasts[_weather_key(checkpoint)].get(hour)
+            conditions = forecasts[_cell(checkpoint)].get(hour)
             if conditions is None or not conditions.complete:
                 missing += 1
             rows.append(_checkpoint_row(checkpoint, eta, hour, conditions, trip.weight_lb))
@@ -126,13 +124,13 @@ def plan_trip(
             "reason": best.reason,
             "warning": best.warning,
         },
-        "heatmap": heatmap.build(grid, [forecasts[p] for p in grid.points], slider_start, trip.weight_lb),
+        "heatmap": heatmap.build(grid, [forecasts[c] for c in grid.cells], slider_start, trip.weight_lb),
         "notes": notes,
     }
 
 
-def _weather_key(c: Checkpoint) -> tuple[float, float]:
-    return round(c.lat, WEATHER_ROUNDING), round(c.lon, WEATHER_ROUNDING)
+def _cell(c: Checkpoint) -> Cell:
+    return cell_of((c.lat, c.lon))
 
 
 def _checkpoint_row(
@@ -149,6 +147,8 @@ def _checkpoint_row(
         "lon": round(checkpoint.lon, 5),
         "eta": eta.isoformat(timespec="seconds"),
         "forecast_hour": hour.isoformat(timespec="seconds"),
+        # The shared 0.1-degree grid cell whose forecast was used, as [lon, lat].
+        "weather_cell": list(reversed(center(_cell(checkpoint)))),
         "weather": {"wind_mph": wind, "rain_in_hr": rain, "snow_in_hr": snow},
         "level": int(risk.level),
         "level_label": risk.level.label,

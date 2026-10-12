@@ -74,8 +74,6 @@ CACHES = {
 
 # Third-party providers. Keys are read server-side only and never sent to the browser.
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "")
-# Optional: a paid Open-Meteo key (commercial use, higher limits). Without one, the free API is used.
-OPEN_METEO_API_KEY = os.environ.get("OPEN_METEO_API_KEY", "")
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

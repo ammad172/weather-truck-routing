@@ -2,7 +2,8 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from routing.heatmap import HOURS, Corridor, build, corridor
+from routing.grid import cell_of, center
+from routing.heatmap import CELL_MULTIPLES, HOURS, LOCATION_BUDGET, MIN_POINTS, Corridor, build, corridor
 from routing.sampling import haversine_mi
 from routing.weather import HourlyWeather
 
@@ -54,11 +55,38 @@ def test_point_count_is_capped_by_growing_the_cells(miles, max_points):
         assert grid.cell_deg > 0.1
 
 
-def test_a_bigger_budget_gives_a_finer_grid():
-    coarse = corridor([north_line(1500)], max_points=150)
-    fine = corridor([north_line(1500)], max_points=350)
-    assert fine.cell_deg < coarse.cell_deg
-    assert len(fine.points) > len(coarse.points)
+def test_a_bigger_budget_gives_a_finer_or_wider_grid():
+    small = corridor([north_line(1500)], max_points=150)
+    big = corridor([north_line(1500)], max_points=350)
+    assert len(big.points) > len(small.points)
+    assert (big.cell_deg, -big.radius_mi) < (small.cell_deg, -small.radius_mi)
+
+
+@pytest.mark.parametrize("miles", [50, 400, 1500])
+def test_heatmap_points_are_cells_of_the_shared_weather_grid(miles):
+    grid = corridor([north_line(miles)])
+    assert grid.cell_deg in {round(m * 0.1, 1) for m in CELL_MULTIPLES}
+    for (i, j), (lat, lon) in zip(grid.cells, grid.points):
+        assert (lat, lon) == center((i, j))
+        assert cell_of((lat, lon)) == (i, j)  # a checkpoint snapped here would reuse this forecast
+
+
+def test_reserved_checkpoint_cells_narrow_the_corridor_before_coarsening_it():
+    route = north_line(200)
+    free = corridor([route])
+    assert (free.cell_deg, free.radius_mi) == (0.1, 15.0)
+    # Checkpoint cells elsewhere use up most of the budget: same spacing, narrower corridor.
+    reserved = {(9000 + i, 0) for i in range(LOCATION_BUDGET - len(free.cells) + 40)}
+    squeezed = corridor([route], reserved=reserved)
+    assert squeezed.cell_deg == 0.1
+    assert squeezed.radius_mi < 15.0
+    assert len(set(squeezed.cells) | reserved) <= LOCATION_BUDGET
+
+
+def test_checkpoints_alone_over_budget_still_get_a_small_heatmap():
+    reserved = {(9000 + i, 0) for i in range(LOCATION_BUDGET + 50)}
+    grid = corridor([north_line(1500)], reserved=reserved)
+    assert 0 < len(grid.cells) <= MIN_POINTS
 
 
 def test_overlapping_routes_share_points():
@@ -68,7 +96,7 @@ def test_overlapping_routes_share_points():
 
 
 def payload(conditions, weight_lb=35_000, hours_present=HOURS + 1):
-    grid = Corridor(points=[(35.0, -100.0), (35.1, -100.0)], cell_deg=0.1)
+    grid = Corridor(cells=[(350, -1000), (351, -1000)], cell_deg=0.1, radius_mi=15.0)
     forecast = {START + timedelta(hours=h): conditions for h in range(hours_present)}
     return build(grid, [forecast, forecast], START, weight_lb)
 

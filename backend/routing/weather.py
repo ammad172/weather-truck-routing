@@ -6,31 +6,39 @@ for the preceding hour, i.e. in/hr. ``rain`` excludes snow, and ``snowfall``
 is snow depth (not water equivalent), which is what the snow thresholds mean.
 
 Open-Meteo meters usage per *location* (a 100-location request costs ~100
-calls; the free tier allows 600/minute and 10,000/day). So forecasts are
-cached per location for a fixed window (departure day + 2 more): re-running a
-trip, changing its departure time, or planning an overlapping trip only
-fetches locations that aren't cached yet.
+calls; the free tier allows 600/minute and 10,000/day). Callers snap points to
+the shared 0.1-degree grid (grid.py), and forecasts are cached per location
+for a fixed window (departure day + 2 more): re-running a trip, changing its
+departure time or checkpoint interval, or planning an overlapping trip only
+fetches locations that aren't cached yet. A 429 gets one short backoff and
+retry of just the rate-limited batches, then a clear "busy, try again" error.
 """
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from datetime import UTC, datetime, time, timedelta
+from time import sleep
 from typing import Protocol
 
 import httpx
 from django.core.cache import cache
 from django.utils import timezone
 
-from .providers.base import ProviderError
+from .providers.base import ProviderError, RateLimitedError
 from .sampling import LatLon
 
-FREE_URL = "https://api.open-meteo.com/v1/forecast"
-CUSTOMER_URL = "https://customer-api.open-meteo.com/v1/forecast"
+FORECAST_URL = "https://api.open-meteo.com/v1/forecast"
 HOURLY_VARIABLES = "wind_speed_10m,rain,snowfall"
 
 BATCH_SIZE = 100  # locations per request; keeps URLs well under server limits
 MAX_PARALLEL = 4
 CACHE_SECONDS = 30 * 60
+RETRY_DELAY_S = 5.0  # one short backoff on 429 (or the server's Retry-After, if shorter than the cap)
+RETRY_MAX_DELAY_S = 10.0
+BUSY_MESSAGE = (
+    "The free weather service is busy (too many forecast requests in the last minute). "
+    "Please wait about a minute and try again."
+)
 WINDOW_DAYS = 3  # departure day + 2: covers a 48 h trip or the 48 h heatmap from any departure hour
 HORIZON_DAYS = 15  # Open-Meteo serves up to 23:00 UTC this many days after today's UTC date
 
@@ -67,9 +75,8 @@ def fetch_window(start: datetime, end: datetime) -> tuple[datetime, datetime]:
 
 
 class OpenMeteoClient:
-    def __init__(self, http: httpx.Client | None = None, api_key: str = ""):
+    def __init__(self, http: httpx.Client | None = None):
         self._http = http or httpx.Client(timeout=20)
-        self._key = api_key
 
     def hourly(self, points: list[LatLon], start: datetime, end: datetime) -> list[Forecast]:
         """Forecasts for ``points`` (same order) covering at least the UTC hours ``start``..``end``."""
@@ -86,21 +93,38 @@ class OpenMeteoClient:
         if missing:
             by_key = dict(zip(keys, points))
             batches = [missing[i : i + BATCH_SIZE] for i in range(0, len(missing), BATCH_SIZE)]
-            with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(batches))) as pool:
-                futures = [pool.submit(self._fetch, [by_key[k] for k in batch], first, last) for batch in batches]
-            # Keep every batch that succeeded even if another failed (e.g. rate limited),
-            # so a retry only fetches what's still missing.
-            fetched, error = {}, None
-            for batch, future in zip(batches, futures):
-                try:
-                    fetched.update(zip(batch, future.result()))
-                except ProviderError as exc:
-                    error = error or exc
-            cache.set_many({k: _pack(f, first, last) for k, f in fetched.items()}, CACHE_SECONDS)
-            if error:
-                raise error
-            found.update(fetched)
+            limited = self._fetch_batches(batches, by_key, first, last, found)
+            if limited:
+                # One short backoff, then retry only the rate-limited batches.
+                sleep(min(max((e.retry_after or RETRY_DELAY_S) for _, e in limited), RETRY_MAX_DELAY_S))
+                if self._fetch_batches([b for b, _ in limited], by_key, first, last, found):
+                    raise RateLimitedError(BUSY_MESSAGE)
         return [found[k] for k in keys]
+
+    def _fetch_batches(
+        self, batches: list[list[str]], by_key: dict[str, LatLon], first: datetime, last: datetime, found: dict[str, Forecast]
+    ) -> list[tuple[list[str], RateLimitedError]]:
+        """Fetch batches in parallel into ``found`` (and the cache). Returns the rate-limited ones.
+
+        Batches that succeed are kept even if another fails, so a retry only fetches what's
+        still missing. Any other error is raised.
+        """
+        with ThreadPoolExecutor(max_workers=min(MAX_PARALLEL, len(batches))) as pool:
+            futures = [pool.submit(self._fetch, [by_key[k] for k in batch], first, last) for batch in batches]
+        fetched: dict[str, Forecast] = {}
+        limited, error = [], None
+        for batch, future in zip(batches, futures):
+            try:
+                fetched.update(zip(batch, future.result()))
+            except RateLimitedError as exc:
+                limited.append((batch, exc))
+            except ProviderError as exc:
+                error = error or exc
+        cache.set_many({k: _pack(f, first, last) for k, f in fetched.items()}, CACHE_SECONDS)
+        found.update(fetched)
+        if error:
+            raise error
+        return limited
 
     def _fetch(self, points: list[LatLon], first: datetime, last: datetime) -> list[Forecast]:
         params = {
@@ -113,15 +137,12 @@ class OpenMeteoClient:
             "start_hour": _hour_param(first),
             "end_hour": _hour_param(last),
         }
-        if self._key:
-            params["apikey"] = self._key
         try:
-            response = self._http.get(CUSTOMER_URL if self._key else FREE_URL, params=params)
+            response = self._http.get(FORECAST_URL, params=params)
         except httpx.HTTPError as exc:
-            # Never include the exception text: it can contain the request URL, and so the key.
             raise ProviderError(f"Couldn't reach Open-Meteo ({type(exc).__name__}).") from None
         if response.status_code == 429:
-            raise ProviderError("The weather service's rate limit was reached. Try again in a minute.")
+            raise RateLimitedError(BUSY_MESSAGE, retry_after=_retry_after(response))
         if response.status_code >= 400:
             raise ProviderError(f"Open-Meteo failed ({response.status_code}): {_reason(response)}.")
 
@@ -169,6 +190,13 @@ def _cache_key(point: LatLon, first: datetime, last: datetime) -> str:
 
 def _hour_param(t: datetime) -> str:
     return t.astimezone(UTC).strftime("%Y-%m-%dT%H:%M")
+
+
+def _retry_after(response: httpx.Response) -> float | None:
+    try:
+        return max(0.0, float(response.headers.get("Retry-After", "")))
+    except ValueError:
+        return None
 
 
 def _reason(response: httpx.Response) -> str:

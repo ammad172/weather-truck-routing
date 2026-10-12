@@ -68,8 +68,8 @@ test('plan a trip and explore the routes', async ({ page }, testInfo) => {
   await page.screenshot({ path: testInfo.outputPath('checkpoint.png') })
 
   // Changing the interval re-plans automatically, with more checkpoints at 10 mi.
-  // (If this fails with an alert about a rate limit, Open-Meteo's free 600-locations/minute
-  // limit was hit by back-to-back cold runs; wait a minute and re-run.)
+  // (A 503 "weather service is busy" here means Open-Meteo's free 600-locations/minute limit
+  // was hit by back-to-back cold runs, even after the server's one retry; wait a minute and re-run.)
   const replan = page.waitForResponse((r) => r.url().endsWith('/api/plan'))
   await page.getByText('10 mi', { exact: true }).click()
   expect((await replan).status()).toBe(200)
