@@ -1,0 +1,27 @@
+# Keep the build context small and free of secrets.
+.git
+**/.env
+*.env
+!.env.example
+ASSIGNMENT.md
+docs/*.pdf
+
+# Python
+backend/.venv
+**/__pycache__
+**/*.py[cod]
+**/.pytest_cache
+backend/cache.sqlite3*
+
+# Node (the image installs its own)
+frontend/node_modules
+frontend/dist
+frontend/test-results
+frontend/playwright-report
+frontend/e2e/fixtures
+
+# Editors / OS
+.vscode
+.idea
+**/Thumbs.db
+**/.DS_Store

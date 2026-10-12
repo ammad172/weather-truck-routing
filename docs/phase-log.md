@@ -97,13 +97,28 @@ A running record of what each phase delivered, the decisions behind it, and what
 - **Truck marker:** hidden at the departure instant, too, so it no longer covers the A marker.
 - **Tests:** 205 backend, 40 frontend unit, and 2 e2e specs (replay) all pass.
 
-## Next: Phase 6
+## Phase 6: deployment (in progress)
 
-- Dockerfile with Django and WhiteNoise serving the build, a Render deploy, the README cold-start note, and the Loom outline.
+**Done:**
+- **Serving:** Django serves the React build. WhiteNoise serves `frontend/dist` at `/` (`WHITENOISE_ROOT`), and `config/spa.py` returns `index.html` (`no-cache`) for every non-API path. `/assets/*` is `immutable`. In production the API renders JSON only, so there's no `collectstatic` and no `STATIC_ROOT`.
+- **Checked locally with DEBUG off:** `/` and deep links return the app; assets are immutable and gzipped; the MapLibre worker `.mjs` is served as `text/javascript`; unknown `/api/` paths return 404, not the app. The production bundle boots in Chromium with no console errors, and the dev-only `window.__map` hook is absent.
+- **`Dockerfile`:** multi-stage (Node 24 builds the app; Python 3.12-slim runs it), with `whitenoise.compress` for pre-gzipped assets, a non-root user, the SQLite cache at `/app/data`, and gunicorn with 2 workers × 4 threads, binding to `$PORT`. `.dockerignore` keeps `.env`, `.venv`, `node_modules` and the fixtures out of the build context.
+- **`render.yaml`:** a free Docker web service with the `/api/health` check, `autoDeploy: false`, a generated `DJANGO_SECRET_KEY` and `HERE_API_KEY` entered in the dashboard. `RENDER_EXTERNAL_HOSTNAME` is added to `ALLOWED_HOSTS`, because Render's health checks send the `onrender.com` host.
+- **Cache race fixed:** gunicorn workers starting at once could race to create the cache table; that's now tolerated. A test starts 6 processes at once.
+- **Empty-map fix:** the Phase 5 legend overlapped the "Enter a trip…" hint and the spinner. Both now sit below it, and the e2e test checks for overlap.
+- **README:** Deployment section, with Render steps, environment variables and the cold-start note.
+
+**Not verified:** Docker isn't installed on this machine, so the image hasn't been built yet. Nothing is deployed.
+
+**Next:**
+- Build the image (locally with Docker, or in CI) and deploy the Blueprint (needs your Render account).
+- Decide on Render Key Value for a cache that survives sleeps.
+- Split the bundle.
+- Write the Loom outline.
 
 ## Open items
 
-- **Bundle size:** the main JS bundle is 1.3 MB (371 KB gzipped), mostly MapLibre. Split chunks in Phase 6.
+- **Bundle size:** the main JS bundle is 1.3 MB (360 KB gzipped), mostly MapLibre. Split it into chunks later in Phase 6.
 - **Markers:** the A and B endpoint markers cover the city labels underneath. Small cosmetic fix.
 - **Live e2e runs:** `E2E_RECORD=1` and `E2E_LIVE=1` each cost about 350–450 Open-Meteo locations; keep them rare. The default replay run is free.
 - **Heatmap above zoom 11:** it fades out between zoom 9.5 and 11, where the blur radius gets very large. The checkpoints carry the detail there.

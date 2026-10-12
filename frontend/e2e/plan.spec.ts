@@ -7,6 +7,11 @@ test('plan a trip and explore the routes', async ({ page }, testInfo) => {
   await expect(page.getByRole('heading', { name: 'Weather-Aware Truck Routing' })).toBeVisible()
   await expect(page.getByText('Times are shown in your timezone (America/Chicago)')).toBeVisible()
 
+  // The empty map's hint and the legend don't cover each other.
+  const legendBox = (await page.getByRole('region', { name: 'Map legend' }).boundingBox())!
+  const hintBox = (await page.locator('.map-hint').boundingBox())!
+  expect(hintBox.y).toBeGreaterThanOrEqual(legendBox.y + legendBox.height)
+
   await planDallasToDenver(page)
 
   // Recommendation and route cards.

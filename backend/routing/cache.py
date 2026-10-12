@@ -7,7 +7,9 @@ process connects. ``createcachetable`` skips tables that already exist.
 
 import threading
 
+from django.conf import settings
 from django.core.management import call_command
+from django.db import DatabaseError
 
 _lock = threading.Lock()
 _ready = False
@@ -21,4 +23,10 @@ def ensure_cache_table(sender=None, connection=None, **kwargs) -> None:
         if _ready:
             return
         _ready = True  # set first: createcachetable uses this same connection
-        call_command("createcachetable", database=connection.alias if connection else "default", verbosity=0)
+        try:
+            call_command("createcachetable", database=connection.alias if connection else "default", verbosity=0)
+        except DatabaseError:
+            # Another worker process created it between the existence check and CREATE TABLE.
+            table = settings.CACHES["default"]["LOCATION"]
+            if connection is None or table not in connection.introspection.table_names():
+                raise

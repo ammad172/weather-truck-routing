@@ -458,7 +458,8 @@ button.primary:disabled {
 .map-overlay,
 .map-hint {
   position: absolute;
-  top: 16px;
+  /* Below the legend, which can span the top of a narrow map. */
+  top: 96px;
   left: 50%;
   transform: translateX(-50%);
   display: flex;

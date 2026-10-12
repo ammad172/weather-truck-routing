@@ -29,6 +29,11 @@ if not SECRET_KEY:
     SECRET_KEY = "dev-only-insecure-key"
 
 ALLOWED_HOSTS = [h.strip() for h in os.environ.get("DJANGO_ALLOWED_HOSTS", "localhost,127.0.0.1").split(",") if h.strip()]
+# Render sets this to the service's own hostname (e.g. weather-truck-routing.onrender.com).
+if render_host := os.environ.get("RENDER_EXTERNAL_HOSTNAME"):
+    ALLOWED_HOSTS.append(render_host)
+# Render terminates TLS at its proxy and forwards plain HTTP with this header.
+SECURE_PROXY_SSL_HEADER = ("HTTP_X_FORWARDED_PROTO", "https")
 
 INSTALLED_APPS = [
     "django.contrib.staticfiles",
@@ -37,11 +42,26 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    "django.middleware.security.SecurityMiddleware",
+    # Serves the built React app (FRONTEND_DIST) before Django's URL routing; see below.
+    "whitenoise.middleware.WhiteNoiseMiddleware",
     # Plan responses carry ~10k heatmap numbers; gzip cuts them by ~85%.
     "django.middleware.gzip.GZipMiddleware",
-    "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
 ]
+
+# The React build. In production Django serves it at the site root: WhiteNoise serves the files,
+# and any other non-API path gets index.html (config/spa.py). In development Vite serves it instead.
+FRONTEND_DIST = Path(os.environ.get("FRONTEND_DIST", BASE_DIR.parent / "frontend" / "dist"))
+WHITENOISE_ROOT = FRONTEND_DIST if FRONTEND_DIST.is_dir() else None
+
+
+def _immutable(path: str, url: str) -> bool:
+    # Vite puts a content hash in every file name under /assets/, so they can be cached forever.
+    return url.startswith("/assets/")
+
+
+WHITENOISE_IMMUTABLE_FILE_TEST = _immutable
 
 ROOT_URLCONF = "config.urls"
 
@@ -60,6 +80,9 @@ REST_FRAMEWORK = {
     "DEFAULT_AUTHENTICATION_CLASSES": [],
     "DEFAULT_PERMISSION_CLASSES": ["rest_framework.permissions.AllowAny"],
     "UNAUTHENTICATED_USER": None,
+    # The browsable API (HTML, with Django static files) is for development only.
+    "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"]
+    + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
 }
 
 # The provider cache (weather 30 min, routes 1 h, geocoding 24 h; the TTLs are set where
@@ -113,5 +136,5 @@ TIME_ZONE = "UTC"
 USE_I18N = False
 USE_TZ = True
 
+# Only the development browsable API uses Django static files; production serves none.
 STATIC_URL = "static/"
-STATIC_ROOT = BASE_DIR / "staticfiles"
