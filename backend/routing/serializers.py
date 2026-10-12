@@ -5,7 +5,8 @@ from rest_framework import serializers
 
 from .sampling import ALLOWED_INTERVALS_MI
 
-MAX_DEPARTURE_AHEAD = timedelta(days=14)  # leaves room for the trip inside Open-Meteo's 16-day forecast
+# Open-Meteo forecasts ~15 days ahead; 13 leaves room for a long trip plus the 48 h heatmap.
+MAX_DEPARTURE_AHEAD = timedelta(days=13)
 DEPARTURE_GRACE = timedelta(hours=1)  # tolerate clock skew and "leave now" submitted a little late
 MAX_LOAD_LB = 80_000
 

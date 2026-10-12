@@ -35,6 +35,8 @@ INSTALLED_APPS = [
 ]
 
 MIDDLEWARE = [
+    # Plan responses carry ~10k heatmap numbers; gzip cuts them by ~85%.
+    "django.middleware.gzip.GZipMiddleware",
     "django.middleware.security.SecurityMiddleware",
     "django.middleware.common.CommonMiddleware",
 ]
@@ -64,11 +66,16 @@ CACHES = {
     "default": {
         "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
         "LOCATION": "weather-truck-routing",
+        # The default (300) is far too small: one plan caches ~400 weather locations.
+        # Entries are compact (~2 KB), so 20,000 is ~40 MB at most.
+        "OPTIONS": {"MAX_ENTRIES": 20_000},
     }
 }
 
 # Third-party providers. Keys are read server-side only and never sent to the browser.
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "")
+# Optional: a paid Open-Meteo key (commercial use, higher limits). Without one, the free API is used.
+OPEN_METEO_API_KEY = os.environ.get("OPEN_METEO_API_KEY", "")
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

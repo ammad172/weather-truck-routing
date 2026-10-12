@@ -2,7 +2,7 @@ from datetime import UTC, datetime, timedelta
 
 import pytest
 
-from routing.planner import NoRouteError, TripRequest, gross_weight_kg, plan_trip, time_profile
+from routing.planner import FREE_HEATMAP_POINTS, NoRouteError, TripRequest, gross_weight_kg, plan_trip, time_profile
 from routing.providers.base import Place
 from routing.sampling import cumulative_miles
 from routing.weather import HourlyWeather
@@ -63,14 +63,42 @@ def test_etas_and_forecast_hours_follow_the_route():
     assert [c["forecast_hour"][11:16] for c in checkpoints] == ["13:00", "14:00", "14:00", "15:00", "15:00"]
 
 
-def test_weather_is_fetched_once_for_all_routes_and_hours():
+def test_checkpoints_and_heatmap_share_one_weather_fetch():
     weather = FakeWeather()
-    plan_trip(trip(interval=25), two_routes(), weather)
+    result = plan_trip(trip(interval=25), two_routes(), weather)
     assert len(weather.requests) == 1
     points, start, end = weather.requests[0]
-    assert points == 10  # 5 checkpoints x 2 routes, none shared
+    assert points == 10 + len(result["heatmap"]["points"])  # 5 checkpoints x 2 routes + the corridor grid
     assert start == DEPART
-    assert end == DEPART + timedelta(hours=3)  # route B arrives 15:30, which rounds to the 16:00 forecast
+    assert end == DEPART + timedelta(hours=48)  # the slider's last frame
+
+
+def test_heatmap_starts_at_the_departure_hour():
+    result = plan_trip(trip(departure=DEPART + timedelta(minutes=40)), two_routes(), FakeWeather())
+    heat = result["heatmap"]
+    assert heat["start"] == "2026-10-13T13:00:00+00:00"
+    assert 0 < len(heat["points"]) <= FREE_HEATMAP_POINTS
+    assert all(len(row) == 49 and None not in row for row in heat["risk"])
+
+
+def test_heatmap_grid_does_not_depend_on_the_checkpoint_interval():
+    # Same grid for every interval, so switching interval reuses the cached heatmap weather.
+    grids = {interval: plan_trip(trip(interval=interval), two_routes(), FakeWeather())["heatmap"]["points"] for interval in (10, 25, 50)}
+    assert grids[10] == grids[25] == grids[50]
+
+
+def test_heatmap_size_is_capped():
+    long_north = FakeRouting([straight_route(ORIGIN, north(ORIGIN, 900), hours=14.0)])
+    heat = plan_trip(trip(), long_north, FakeWeather(), heatmap_points=120)["heatmap"]
+    assert len(heat["points"]) <= 120
+    assert heat["cell_deg"] > 0.1
+
+
+def test_heatmap_shows_the_storm_east_of_the_routes():
+    weather = FakeWeather(stormy=WINDY, stormy_east_of=ORIGIN[1])
+    heat = plan_trip(trip(weight_lb=35_000), two_routes(), weather)["heatmap"]
+    for (lon, _), row in zip(heat["points"], heat["risk"]):
+        assert row[0] == (4 if lon > ORIGIN[1] else 0)
 
 
 def test_wind_with_heavy_load_makes_the_eastern_route_no_travel_and_ranks_it_last():

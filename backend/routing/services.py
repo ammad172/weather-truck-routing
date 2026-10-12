@@ -5,6 +5,7 @@ from functools import cache
 import httpx
 from django.conf import settings
 
+from .planner import FREE_HEATMAP_POINTS, PAID_HEATMAP_POINTS
 from .providers.base import RoutingProvider
 from .providers.here import HereClient
 from .weather import OpenMeteoClient, WeatherProvider
@@ -21,4 +22,9 @@ def routing_provider() -> RoutingProvider:
 
 
 def weather_provider() -> WeatherProvider:
-    return OpenMeteoClient(http=_http())
+    return OpenMeteoClient(http=_http(), api_key=settings.OPEN_METEO_API_KEY)
+
+
+def heatmap_points() -> int:
+    """Heatmap grid size; a paid Open-Meteo key's higher limits allow a finer grid."""
+    return PAID_HEATMAP_POINTS if settings.OPEN_METEO_API_KEY else FREE_HEATMAP_POINTS

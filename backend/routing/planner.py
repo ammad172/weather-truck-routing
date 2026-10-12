@@ -1,9 +1,11 @@
-"""Plan a trip: routes -> checkpoints -> ETAs -> weather at each ETA -> risk -> recommendation."""
+"""Plan a trip: routes -> checkpoints -> ETAs -> weather at each ETA -> risk -> recommendation,
+plus the corridor heatmap for the 48 hours from departure."""
 
 import string
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
+from . import heatmap
 from .alternatives import three_routes
 from .eta import TimeProfile, checkpoint_etas, nearest_forecast_hour
 from .geometry import simplify
@@ -20,6 +22,12 @@ KG_PER_LB = 0.45359237
 TRACTOR_TRAILER_TARE_LB = 35_000
 # Points closer than this share one weather lookup (~1 km; finer than the forecast grid).
 WEATHER_ROUNDING = 2
+# Heatmap grid size. Open-Meteo meters each location as a call and the free tier allows
+# 600/minute: 300 grid points + checkpoints (~100 at 25 mi, ~250 at 10 mi) stays under it.
+# The size doesn't depend on the checkpoint interval, so switching interval reuses the
+# cached heatmap and only fetches the new checkpoints.
+FREE_HEATMAP_POINTS = 300
+PAID_HEATMAP_POINTS = 1000
 
 
 class NoRouteError(Exception):
@@ -48,7 +56,12 @@ def time_profile(route: ProviderRoute, cum: list[float]) -> TimeProfile:
     return TimeProfile(miles=tuple(miles), seconds=tuple(seconds))
 
 
-def plan_trip(trip: TripRequest, routing: RoutingProvider, weather: WeatherProvider) -> dict:
+def plan_trip(
+    trip: TripRequest,
+    routing: RoutingProvider,
+    weather: WeatherProvider,
+    heatmap_points: int = FREE_HEATMAP_POINTS,
+) -> dict:
     origin = (trip.origin.lat, trip.origin.lon)
     destination = (trip.destination.lat, trip.destination.lon)
     route_set = three_routes(routing, origin, destination, trip.departure, gross_weight_kg(trip.weight_lb))
@@ -63,10 +76,14 @@ def plan_trip(trip: TripRequest, routing: RoutingProvider, weather: WeatherProvi
         etas = checkpoint_etas([c.mile for c in checkpoints], time_profile(candidate.route, cumulative_miles(coords)), trip.departure)
         planned.append((candidate, checkpoints, etas))
 
-    # 2. One weather fetch for every checkpoint on every route, covering all their forecast hours.
-    keys = {_weather_key(c) for _, checkpoints, _ in planned for c in checkpoints}
-    points = sorted(keys)
+    # 2. One weather fetch for every checkpoint on every route *and* the heatmap corridor,
+    #    covering the checkpoints' forecast hours and the 48 h slider from departure.
+    checkpoint_points = {_weather_key(c) for _, checkpoints, _ in planned for c in checkpoints}
+    grid = heatmap.corridor([c.route.coords for c in route_set.routes], max_points=heatmap_points)
+    slider_start = trip.departure.astimezone(UTC).replace(minute=0, second=0, microsecond=0)
+    points = sorted(checkpoint_points | set(grid.points))
     hours = [nearest_forecast_hour(t) for _, _, etas in planned for t in etas]
+    hours += [slider_start, slider_start + timedelta(hours=heatmap.HOURS)]
     forecasts = dict(zip(points, weather.hourly(points, min(hours), max(hours))))
 
     # 3. Risk at each checkpoint, then per-route summaries and the recommendation.
@@ -109,6 +126,7 @@ def plan_trip(trip: TripRequest, routing: RoutingProvider, weather: WeatherProvi
             "reason": best.reason,
             "warning": best.warning,
         },
+        "heatmap": heatmap.build(grid, [forecasts[p] for p in grid.points], slider_start, trip.weight_lb),
         "notes": notes,
     }
 

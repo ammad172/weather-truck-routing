@@ -36,9 +36,12 @@ Implementation should happen in a **new Claude Code session started from `C:\Pro
 5. **Recommendation:** sort routes lexicographically by `(no_travel_miles, severe_miles, high_miles, round(avg_risk, 2), duration)`. No Travel miles rank first (strictly worse than Severe), then the spec's order. Return a human-readable reason, e.g. "Route B: 0 Severe miles vs 25 on A". If every route has No Travel segments, still rank them but return a prominent warning.
 
 ## Heatmap (0–48 h slider)
-- Backend builds a corridor grid: points along the union of all 3 routes every ~10 mi, plus offsets of ±15 and ±30 mi perpendicular to the route. This is capped at about 400 points, deduped on a 0.1° grid.
-- One batched Open-Meteo request (chunks of ~100 coords, run concurrently) returns 49 hourly values per point, starting from the current hour.
-- The response sends compact arrays (`points[]`, `risk[point][hour]` as small ints, plus raw wind/precip/snow). The slider only swaps the GeoJSON weights client-side and **never refetches**. `setData` is throttled with `requestAnimationFrame`.
+- *(Revised in Phase 3. Open-Meteo bills per location: 600 a minute and 10,000 a day on the free tier.)*
+- **Grid:** the backend fills a regular grid with every cell within 15 mi of any route. It holds at most 300 points free or 1,000 with a paid key, and the cell size grows to fit. The size doesn't depend on the checkpoint interval, so switching intervals reuses the cache.
+- **Weather fetch:** one Open-Meteo fetch covers both the checkpoints and the grid, in batches of 100 run in parallel. Each location is cached for the departure day plus 2 more.
+- **Time range:** the slider starts at the **departure hour**, not the current hour, so every frame overlaps the trip.
+- **Response format:** compact arrays (`points[]`, plus `risk[point][hour]`, wind, rain and snow), gzip-compressed.
+- **Slider:** each point gets one property per hour, and the slider changes only the heatmap's `heatmap-weight` paint expression (`["get", "h12"]`). That means no `setData` and **no refetch** while dragging.
 - The heatmap shows forecast risk at the slider hour. A toggle switches between risk, wind, precipitation and snow.
 
 ## API

@@ -45,7 +45,7 @@ def plan(request: Request) -> Response:
             weight_lb=data["weight_lb"],
             interval_mi=data["interval_mi"],
         )
-        return Response(plan_trip(trip, routing, services.weather_provider()))
+        return Response(plan_trip(trip, routing, services.weather_provider(), services.heatmap_points()))
     except NoRouteError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
     except ProviderError as exc:
