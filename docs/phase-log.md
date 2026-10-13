@@ -140,6 +140,7 @@ A running record of what each phase delivered, the decisions behind it, and what
 - **Counters** live in their own `limits` cache (`rate_limits` table), so provider-cache culling can't reset them. They do reset when the container restarts (see the README's Limitations).
 - **E2E:** the suite raises the throttles and (in replay) the cap. Fixed an old flaky locator: the map's scale bar can also read "50 mi".
 - **Live check of planning:** done on 2026-10-13 (Dallas → Denver, all checks passed), with the user's go-ahead.
+- **Checked on Azure:** a temporary endpoint (since removed) showed that Azure's ingress replaces any `X-Forwarded-For` with just the client's IP (no port), the same on every connection, so `NUM_PROXIES=1` reads the right address. Over one kept-alive connection, the 61st place search in a minute got a 429. Sequential requests over new connections took about 1.3 s each (a new TLS handshake to East Asia every time), so they never reached 60 in a minute. That first looked like the limit not working, and led to a wrong fix (dropping a port that Azure doesn't send), which was reverted. A parallel burst over separate connections, which would show both gunicorn workers sharing the count, wasn't run on the live app.
 - **Tests:** 229 backend (13 new in `test_limits.py`), 40 frontend unit, and 10 e2e (60 of 60 over 6 repeats).
 
 ## Open items
