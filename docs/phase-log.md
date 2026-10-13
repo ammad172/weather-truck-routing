@@ -132,10 +132,19 @@ A running record of what each phase delivered, the decisions behind it, and what
   - **Walkthrough:** a 5-minute script for the screen recording.
 - **Tests:** 216 backend, 40 frontend unit, and 10 e2e (replay; adds `errors.spec.ts` and `mobile.spec.ts`).
 
+## After Phase 6: abuse protection
+
+- **Per-IP throttles** (DRF): `/api/plan` 10 a minute and 100 a day, `/api/geocode` 60 a minute. Over the limit: 429 with `Retry-After` and a plain message. The client IP is the last `X-Forwarded-For` entry behind Azure's ingress (`NUM_PROXIES=1`).
+- **Daily HERE cap:** `HERE_DAILY_CAP` (default 300) requests to HERE per UTC day, counted before sending. At the cap, plan and place search answer 503 "Daily demo limit reached. Try again tomorrow…" without calling HERE; cached answers still work.
+- **Usage log:** each HERE request logs the day's running total to stdout.
+- **Counters** live in their own `limits` cache (`rate_limits` table), so provider-cache culling can't reset them. They do reset when the container restarts (see the README's Limitations).
+- **E2E:** the suite raises the throttles and (in replay) the cap. Fixed an old flaky locator: the map's scale bar can also read "50 mi".
+- **Live check of planning:** done on 2026-10-13 (Dallas → Denver, all checks passed), with the user's go-ahead.
+- **Tests:** 229 backend (13 new in `test_limits.py`), 40 frontend unit, and 10 e2e (60 of 60 over 6 repeats).
+
 ## Open items
 
 - **Markers:** the A and B endpoint markers cover the city labels underneath. Small cosmetic fix.
 - **Live e2e runs:** `E2E_RECORD=1` and `E2E_LIVE=1` each cost about 350–450 Open-Meteo locations; keep them rare. The default replay run is free.
 - **Heatmap above zoom 11:** it fades out between zoom 9.5 and 11, where the blur radius gets very large. The checkpoints carry the detail there.
 - **Azure access:** the deploy lives in someone else's subscription (`rg_autox`, Contributor only). If that access is removed, the app goes down. The README's Azure commands recreate it anywhere.
-- **A live check of planning:** a real trip hasn't been planned on the deployed app; it would make live HERE and Open-Meteo calls, which need the user's go-ahead.

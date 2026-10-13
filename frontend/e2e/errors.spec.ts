@@ -72,7 +72,7 @@ test('a failed re-plan keeps the previous routes and says so', async ({ page }, 
   await expect(page.getByText(/^Recommended: Route [A-C]$/)).toBeVisible()
 
   fail = true
-  await page.getByText('50 mi', { exact: true }).click()
+  await page.locator('form').getByText('50 mi', { exact: true }).click() // not the map's scale bar, which can read "50 mi" too
   const alert = page.getByRole('alert')
   await expect(alert).toContainText('busy')
   await expect(alert).toContainText('The routes below are from your previous plan.')

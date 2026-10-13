@@ -55,7 +55,7 @@ test('plan a trip and explore the routes', async ({ page }, testInfo) => {
   // (50 mi rather than 10: its weather cells are all among the 25 mi plan's, so the recorded
   // fixtures cover it without another ~110 Open-Meteo locations.)
   const replan = page.waitForResponse((r) => r.url().endsWith('/api/plan'))
-  await page.getByText('50 mi', { exact: true }).click()
+  await page.locator('form').getByText('50 mi', { exact: true }).click() // not the map's scale bar, which can read "50 mi" too
   expect((await replan).status()).toBe(200)
   await expect(page.getByRole('alert')).toHaveCount(0)
   await expect(page.locator('.trip-summary')).toContainText('checkpoint every 50 mi')

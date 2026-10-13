@@ -8,6 +8,7 @@ import flexpolyline
 import httpx
 from django.core.cache import cache
 
+from ..limits import count_here_request
 from ..sampling import LatLon
 from .base import Place, ProviderError, ProviderRoute
 
@@ -69,6 +70,7 @@ class HereClient:
         return payload
 
     def _fetch(self, url: str, params: dict[str, Any], service: str) -> dict:
+        count_here_request(service)  # refuses (before sending) once today's cap is reached
         try:
             response = self._http.get(url, params={**params, "apiKey": self._key})
         except httpx.HTTPError as exc:

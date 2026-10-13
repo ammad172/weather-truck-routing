@@ -45,7 +45,12 @@ const backendEnv: Record<string, string> = {
         FROZEN_NOW: process.env.E2E_FROZEN_NOW!.replace('Z', '+00:00'),
       }),
   // Replay needs no key; a fake one means even a request that somehow went out would be refused.
-  ...(mode === 'replay' ? { HERE_API_KEY: 'replay-mode-has-no-key' } : {}),
+  // Replayed HERE "requests" are free, so they don't count against a daily cap either.
+  ...(mode === 'replay' ? { HERE_API_KEY: 'replay-mode-has-no-key', HERE_DAILY_CAP: '1000000' } : {}),
+  // The whole suite plans from one IP in a minute or two, well past the per-visitor limits.
+  THROTTLE_PLAN_MINUTE: '1000/minute',
+  THROTTLE_PLAN_DAY: '10000/day',
+  THROTTLE_GEOCODE_MINUTE: '1000/minute',
 }
 
 export default defineConfig({

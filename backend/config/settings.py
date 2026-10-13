@@ -93,8 +93,22 @@ REST_FRAMEWORK = {
     # The browsable API (HTML, with Django static files) is for development only.
     "DEFAULT_RENDERER_CLASSES": ["rest_framework.renderers.JSONRenderer"]
     + (["rest_framework.renderers.BrowsableAPIRenderer"] if DEBUG else []),
+    "EXCEPTION_HANDLER": "routing.limits.exception_handler",
+    # Per client IP (routing/limits.py). Each rate is "<count>/<second|minute|hour|day>".
+    "DEFAULT_THROTTLE_RATES": {
+        "plan_minute": os.environ.get("THROTTLE_PLAN_MINUTE", "10/minute"),
+        "plan_day": os.environ.get("THROTTLE_PLAN_DAY", "100/day"),
+        "geocode_minute": os.environ.get("THROTTLE_GEOCODE_MINUTE", "60/minute"),
+    },
+    # How many proxies sit in front of the app; the client IP is that many entries from the
+    # end of X-Forwarded-For. Azure Container Apps' ingress is one. 0 trusts only the socket
+    # address (a direct deployment), so a client can't dodge its limit with a forged header.
+    "NUM_PROXIES": int(os.environ.get("NUM_PROXIES", "1")),
 }
 
+# Rate-limit counters (per-IP throttles and the daily HERE count) live in their own "limits"
+# cache, so a busy provider cache culling old entries can never reset them.
+#
 # The provider cache (weather 30 min, routes 1 h, geocoding 24 h; the TTLs are set where
 # each is cached). It's the only thing stored, so the "database" is just the cache.
 #   sqlite (default): a SQLite file, so the cache survives a server restart and is shared by
@@ -120,16 +134,26 @@ if CACHE_BACKEND == "sqlite":
             },
         }
     }
-    # The table is created on first connection (routing/cache.py).
-    CACHES = {"default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "provider_cache", "OPTIONS": CACHE_OPTIONS}}
+    # The tables are created on first connection (routing/cache.py).
+    CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "provider_cache", "OPTIONS": CACHE_OPTIONS},
+        "limits": {"BACKEND": "django.core.cache.backends.db.DatabaseCache", "LOCATION": "rate_limits"},
+    }
 elif CACHE_BACKEND == "locmem":
     DATABASES: dict = {}
-    CACHES = {"default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "weather-truck-routing", "OPTIONS": CACHE_OPTIONS}}
+    CACHES = {
+        "default": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "weather-truck-routing", "OPTIONS": CACHE_OPTIONS},
+        "limits": {"BACKEND": "django.core.cache.backends.locmem.LocMemCache", "LOCATION": "weather-truck-routing-limits"},
+    }
 else:
     raise RuntimeError(f"CACHE_BACKEND must be 'sqlite' or 'locmem', not {CACHE_BACKEND!r}.")
 
 # Third-party providers. Keys are read server-side only and never sent to the browser.
 HERE_API_KEY = os.environ.get("HERE_API_KEY", "")
+# A global cap on HERE requests (cache misses) per UTC day, across every visitor. The free
+# HERE plan allows about 1,000 a day (30,000 a month each for routing and geocoding); a
+# cold plan makes at most 7 (two geocodes, one route request, up to four detours).
+HERE_DAILY_CAP = int(os.environ.get("HERE_DAILY_CAP", "300"))
 
 # End-to-end tests only: record provider responses, or replay them with no network
 # (routing/http_fixtures.py), and freeze "now" to the recording time (routing/clock.py).
@@ -142,6 +166,15 @@ if os.environ.get("FROZEN_NOW"):
     FROZEN_NOW = datetime.fromisoformat(os.environ["FROZEN_NOW"])
     if FROZEN_NOW.tzinfo is None:
         raise RuntimeError("FROZEN_NOW needs a UTC offset, e.g. 2026-10-12T15:10:00+00:00.")
+
+# The app's own log lines (e.g. the daily HERE usage) go to stdout, where the host collects them.
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "formatters": {"plain": {"format": "%(levelname)s %(name)s: %(message)s"}},
+    "handlers": {"console": {"class": "logging.StreamHandler", "formatter": "plain"}},
+    "loggers": {"routing": {"handlers": ["console"], "level": os.environ.get("LOG_LEVEL", "INFO")}},
+}
 
 LANGUAGE_CODE = "en-us"
 TIME_ZONE = "UTC"

@@ -14,6 +14,7 @@ from dataclasses import dataclass
 from datetime import datetime
 
 from .geometry import destination_point, initial_bearing, overlap_ratio
+from .limits import HereDailyLimitError
 from .providers.base import ProviderError, ProviderRoute, RoutingProvider
 from .sampling import LatLon, cumulative_miles, haversine_mi, point_at_mile
 
@@ -78,6 +79,8 @@ def three_routes(
             # Best effort: one failed detour shouldn't sink a plan that already has routes.
             try:
                 detours = provider.truck_routes(origin, destination, departure, gross_weight_kg, alternatives=0, via=via)
+            except HereDailyLimitError:
+                raise  # the whole plan stops with the daily-limit message, not just this detour
             except ProviderError:
                 return None
             return detours[0] if detours else None

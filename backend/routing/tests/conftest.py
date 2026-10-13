@@ -2,7 +2,7 @@ import json
 from pathlib import Path
 
 import pytest
-from django.core.cache import cache
+from django.core.cache import caches
 
 FIXTURES = Path(__file__).parent / "fixtures"
 
@@ -14,6 +14,9 @@ def load_fixture(name: str):
 
 @pytest.fixture(autouse=True)
 def clear_cache():
-    cache.clear()
+    # Both the provider cache and the rate-limit counters, so every test starts fresh.
+    for alias in ("default", "limits"):
+        caches[alias].clear()
     yield
-    cache.clear()
+    for alias in ("default", "limits"):
+        caches[alias].clear()

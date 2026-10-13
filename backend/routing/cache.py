@@ -1,7 +1,7 @@
-"""Creates the SQLite cache table on the first database connection.
+"""Creates the SQLite cache tables on the first database connection.
 
 The provider cache is the only thing in the database, so instead of a migration
-step before every start, the table is created (if missing) the first time the
+step before every start, the tables are created (if missing) the first time the
 process connects. ``createcachetable`` skips tables that already exist.
 """
 
@@ -26,7 +26,7 @@ def ensure_cache_table(sender=None, connection=None, **kwargs) -> None:
         try:
             call_command("createcachetable", database=connection.alias if connection else "default", verbosity=0)
         except (CommandError, DatabaseError):  # createcachetable re-raises DB errors as CommandError
-            # Another worker process created it between the existence check and CREATE TABLE.
-            table = settings.CACHES["default"]["LOCATION"]
-            if connection is None or table not in connection.introspection.table_names():
+            # Another worker process created them between the existence check and CREATE TABLE.
+            tables = {c["LOCATION"] for c in settings.CACHES.values() if c["BACKEND"].endswith("DatabaseCache")}
+            if connection is None or not tables <= set(connection.introspection.table_names()):
                 raise

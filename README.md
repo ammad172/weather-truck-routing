@@ -18,11 +18,14 @@ flowchart LR
     Geo["/api/geocode"]
     Plan["/api/plan"]
     Cache[("SQLite cache<br/>weather 30 min · routes 1 h · places 24 h")]
+    Limits[("Limits<br/>per-IP throttles · HERE requests today")]
   end
   Form -->|place name| Geo
   Form -->|trip| Plan
   Geo --> HERE["HERE<br/>geocoding + truck routing"]
   Plan --> HERE
+  Geo -.-> Limits
+  Plan -.-> Limits
   Plan --> OM["Open-Meteo<br/>hourly wind, rain, snow"]
   HERE -.-> Cache
   OM -.-> Cache
@@ -116,8 +119,9 @@ Errors:
 |---|---|
 | 400 | Invalid input, or a place name that can't be found |
 | 422 | No truck route exists between the two places |
+| 429 | Too many requests from this IP (see [Abuse protection](#abuse-protection)). "Too many requests from your connection. Try again in 42 seconds.", with `Retry-After`. |
 | 502 | HERE or Open-Meteo failed. The message is safe to show and never includes the API key. |
-| 503 | Open-Meteo's free tier is rate-limiting us even after one retry. The response says to wait about a minute and includes `Retry-After: 60`. |
+| 503 | A free tier is used up for now. Open-Meteo still rate-limiting after one retry: "wait about a minute", `Retry-After: 60`. An Open-Meteo hourly or daily quota, or the [daily HERE cap](#abuse-protection): `Retry-After` until it resets. |
 
 ## Assumptions
 
@@ -227,6 +231,27 @@ Measured on Dallas → Denver, back to back within one minute, with an empty cac
 
 Before snapping, the same sequence needed about 510 locations. Repeating it a minute later could hit the limit.
 
+### Abuse protection
+
+The hosted demo runs on free tiers, so one visitor (or a script) mustn't be able to use them up for everyone. All of this is in `backend/routing/limits.py`.
+
+- **Per-IP throttles** (DRF throttling), each configurable by env var:
+
+  | Endpoint | Limit | Env var |
+  |---|---|---|
+  | `POST /api/plan` | 10 a minute | `THROTTLE_PLAN_MINUTE` |
+  | `POST /api/plan` | 100 a day | `THROTTLE_PLAN_DAY` |
+  | `GET /api/geocode` | 60 a minute (place suggestions are debounced and cached, so typing uses far fewer) | `THROTTLE_GEOCODE_MINUTE` |
+
+  Over the limit, the API answers 429 with `Retry-After` and "Too many requests from your connection. Try again in …", which the UI shows as is. `/api/health` isn't throttled.
+- **The client IP:** behind Azure's ingress, the client is the last `X-Forwarded-For` entry (`NUM_PROXIES=1`, the default). Entries a client adds itself come before it, so they can't buy a fresh allowance. Deployed with no proxy in front, set `NUM_PROXIES=0` to use the socket address.
+- **A global daily cap on HERE requests:** at most `HERE_DAILY_CAP` (default **300**) requests to HERE per UTC day, from all visitors together. HERE's free plan allows 30,000 a month each for routing and geocoding, about 1,000 a day. A new plan makes at most 7 (two geocodes, one route request, up to four detours), so 300 is still 40 or more brand-new plans a day.
+  - Only real requests to HERE count. Cached routes and places are free, and keep working after the cap is reached.
+  - The count is checked **before** sending, so a refused request never reaches HERE. Plan and place search then answer 503: "Daily demo limit reached. Try again tomorrow (the limit resets at 00:00 UTC).", with `Retry-After` set to the seconds until midnight UTC.
+  - If the cap is reached in the middle of a plan, the whole plan stops with that message, rather than quietly showing fewer routes.
+- **Usage log:** every HERE request logs the day's running total, e.g. `INFO routing.limits: HERE requests on 2026-10-13 (UTC): 37 of 300 (routing)`, so the day's last line is its total. Reaching the cap logs a warning. Logs go to stdout.
+- **Where the counters live:** in their own `limits` cache (the `rate_limits` table, next to the provider cache), so a busy provider cache culling old entries can't reset them.
+
 ### Heatmap
 
 - **Time range:** the slider runs from the **departure hour** (+0 h) to 48 hours later. That way, every frame overlaps the trip, even for a departure several days ahead. If the user leaves now, this is the same as a forecast that starts now.
@@ -306,6 +331,12 @@ The whole app is **one Docker container**. The [Dockerfile](Dockerfile) builds t
 | `DJANGO_DEBUG` | yes | `0` |
 | `DJANGO_ALLOWED_HOSTS` | on Azure | The app's own hostname, e.g. `weather-truck-routing.<environment>.<region>.azurecontainerapps.io`. On Render it's added automatically, from `RENDER_EXTERNAL_HOSTNAME`. |
 | `CACHE_BACKEND`, `CACHE_DB` | | See [Weather call budget and caching](#weather-call-budget-and-caching) |
+| `HERE_DAILY_CAP` | | HERE requests allowed per UTC day, from all visitors together. Default `300`. |
+| `THROTTLE_PLAN_MINUTE`, `THROTTLE_PLAN_DAY`, `THROTTLE_GEOCODE_MINUTE` | | Per-IP rates, e.g. `10/minute`. Defaults `10/minute`, `100/day`, `60/minute`. |
+| `NUM_PROXIES` | | Proxies in front of the app, for finding the client IP. Default `1` (Azure's ingress); `0` with none. |
+| `LOG_LEVEL` | | The app's own log level. Default `INFO`, which logs each HERE request with the day's total. |
+
+See [Abuse protection](#abuse-protection).
 
 Don't set `FROZEN_NOW` or `HTTP_FIXTURES`; they're for the end-to-end tests. With `FROZEN_NOW` set, the app refuses to start unless debug is on.
 
@@ -334,7 +365,7 @@ To deploy a new version: push to `main`, wait for the image workflow to finish, 
 What we learned deploying:
 
 - **Set `DJANGO_ALLOWED_HOSTS` when you create the app.** Our first environment came up as an Azure *express* environment. It has a single `--latest` revision and doesn't allow revision suffixes, and an environment-variable update was never rolled out to the running revision, which kept answering every request with 400. Creating the app with its hostname already set, in a `--enable-workload-profiles false` environment, worked first time. The settings also try to work out the hostname from Azure's `CONTAINER_APP_NAME` and `CONTAINER_APP_ENV_DNS_SUFFIX` variables, but on Azure don't rely on that: set it explicitly.
-- **There's no log workspace.** `az containerapp logs show` doesn't work without one. To read logs, add a Log Analytics workspace (its first 5 GB a month are free).
+- **There's no log workspace.** `az containerapp logs show` doesn't work without one. To read logs, including the daily HERE usage lines, add a Log Analytics workspace (its first 5 GB a month are free).
 
 > **Cold start:** with scale to zero, the first visit after a quiet spell starts the container, which takes a few seconds. After that the app answers immediately. The weather cache starts empty in each new container, so the first plan after a cold start fetches all of its weather.
 
@@ -360,6 +391,8 @@ What the app does in unusual situations, and where each case is tested. Backend 
 | Wind at 47 mph with a 35,000 lb load | No Travel (the load rule), and that route ranks last | `test_planner.py`, `test_heatmap.py` |
 | Open-Meteo per-minute limit | One short retry, then 503 "busy… wait about a minute" | `test_weather.py`, `test_views.py` |
 | Open-Meteo hourly or daily limit used up | No retry (it can't help). 503 naming the limit, with `Retry-After` until it resets. | `test_weather.py`, `test_views.py`, `errors.spec.ts` |
+| One IP sends more than 10 plans a minute, 100 a day, or 60 place searches a minute | 429 "Too many requests from your connection. Try again in …", with `Retry-After`. Nothing reaches HERE or Open-Meteo. | `test_limits.py` |
+| The daily HERE cap is reached | 503 "Daily demo limit reached. Try again tomorrow…", with `Retry-After` until midnight UTC. HERE isn't called; cached routes and places still work. | `test_limits.py` |
 | HERE or Open-Meteo fails | 502 with a readable message that never includes the API key | `test_views.py`, `test_here.py` |
 | Connection drops, or the server can't be reached | "Couldn't reach the server. Check your connection and try again." | `errors.spec.ts` |
 | A proxy error page instead of JSON | "The server had a problem. Please try again." | `errors.spec.ts` |
@@ -382,6 +415,7 @@ What the app does in unusual situations, and where each case is tested. Backend 
 
   Weather features smaller than a cell, such as a single thunderstorm cell or a narrow snow band, get averaged into the surrounding area. Checkpoint risk, which drives the recommendation, is affected much less: each checkpoint uses the 0.1° cell nearest to it. See [Weather grid snapping](#weather-grid-snapping).
 - **Very long trips at a 10-mile interval.** Three coast-to-coast routes at 10 miles have more checkpoint cells than the free tier allows per minute. For those trips the heatmap drops to its minimum (100 points), and the plan may still return the "busy, try again in a minute" message. A 25- or 50-mile interval works.
+- **The daily HERE count resets when the container does.** The counters are in the container's SQLite file, and the live app scales to zero when idle, so a fresh container starts its day's count from 0. Sustained use keeps the container running, so the cap holds while someone is actually using it. A cap that survives restarts would need a store outside the container, such as Redis or an Azure Files volume.
 - **Back-to-back new trips.** Two or three completely new trips planned within one minute can still exceed the free tier's per-minute limit. The one automatic retry covers short bursts. Beyond that, the user sees the "wait about a minute" message rather than a broken page.
 
 ## Walkthrough script (about 5 minutes)
@@ -425,7 +459,7 @@ A script for a screen recording of the live app. The checks below each step are 
 - One Django + React container. HERE provides geocoding and truck routing (on the truck's gross weight), and Open-Meteo the hourly forecasts.
 - Weather lookups snap to a shared 0.1° grid and are cached, which keeps a plan within the free tier.
 - The heatmap shows the worst of each cell's neighbours, so a single storm cell is never averaged away.
-- Tests: 216 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.
+- Tests: 229 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.
 
 ## License
 

@@ -1,11 +1,12 @@
 from math import ceil
 
 from rest_framework import status
-from rest_framework.decorators import api_view
+from rest_framework.decorators import api_view, throttle_classes
 from rest_framework.request import Request
 from rest_framework.response import Response
 
 from . import services
+from .limits import GeocodeMinuteThrottle, PlanDayThrottle, PlanMinuteThrottle
 from .planner import NoRouteError, TripRequest, plan_trip
 from .providers.base import Place, ProviderError, RateLimitedError, RoutingProvider
 from .sampling import haversine_mi
@@ -20,17 +21,21 @@ def health(request: Request) -> Response:
 
 
 @api_view(["GET"])
+@throttle_classes([GeocodeMinuteThrottle])
 def geocode(request: Request) -> Response:
     query = GeocodeQuerySerializer(data=request.query_params)
     query.is_valid(raise_exception=True)
     try:
         places = services.routing_provider().geocode(query.validated_data["q"])
+    except RateLimitedError as exc:
+        return _rate_limited(exc)
     except ProviderError as exc:
         return _provider_failed(exc)
     return Response({"results": [{"label": p.label, "lat": p.lat, "lon": p.lon} for p in places]})
 
 
 @api_view(["POST"])
+@throttle_classes([PlanMinuteThrottle, PlanDayThrottle])
 def plan(request: Request) -> Response:
     body = PlanRequestSerializer(data=request.data)
     body.is_valid(raise_exception=True)
@@ -61,10 +66,7 @@ def plan(request: Request) -> Response:
     except NoRouteError as exc:
         return Response({"detail": str(exc)}, status=status.HTTP_422_UNPROCESSABLE_ENTITY)
     except RateLimitedError as exc:
-        # 503 + Retry-After: the request was fine, the free weather tier is just busy right now.
-        # At least a minute; longer when an hourly or daily quota resets later than that.
-        retry_after = max(60, ceil(exc.retry_after or 0)) if not exc.retryable else 60
-        return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": str(retry_after)})
+        return _rate_limited(exc)
     except ProviderError as exc:
         return _provider_failed(exc)
 
@@ -77,6 +79,15 @@ def _resolve(routing: RoutingProvider, location: dict, field: str) -> Place | Re
     if not matches:
         return Response({field: [f"Couldn't find \"{location['query']}\"."]}, status=status.HTTP_400_BAD_REQUEST)
     return matches[0]
+
+
+def _rate_limited(exc: RateLimitedError) -> Response:
+    """503 + Retry-After: the request was fine, a free provider tier is just used up for now.
+
+    At least a minute; longer when an hourly or daily quota resets later than that.
+    """
+    retry_after = max(60, ceil(exc.retry_after or 0)) if not exc.retryable else 60
+    return Response({"detail": str(exc)}, status=status.HTTP_503_SERVICE_UNAVAILABLE, headers={"Retry-After": str(retry_after)})
 
 
 def _provider_failed(exc: ProviderError) -> Response:
