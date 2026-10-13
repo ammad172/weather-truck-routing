@@ -11,7 +11,7 @@ from django.utils import timezone
 
 from routing import limits, services
 from routing.alternatives import three_routes
-from routing.limits import DAILY_LIMIT_MESSAGE, HereDailyLimitError, PlanDayThrottle, count_here_request
+from routing.limits import DAILY_LIMIT_MESSAGE, HereDailyLimitError, PlanDayThrottle, client_ip, count_here_request
 from routing.providers.here import HereClient
 
 from .fakes import FakeRouting, FakeWeather, north, straight_route
@@ -88,6 +88,28 @@ def test_each_client_ip_has_its_own_allowance(client, fake_providers, monkeypatc
     assert plan(client, HTTP_X_FORWARDED_FOR="203.0.113.2").status_code == 200
     # Forging an earlier entry doesn't give a fresh allowance: the proxy appends the real one.
     assert plan(client, HTTP_X_FORWARDED_FOR="198.51.100.9, 203.0.113.1").status_code == 429
+
+
+def test_a_new_connection_port_does_not_give_a_fresh_allowance(client, fake_providers, monkeypatch):
+    # Azure's ingress sends "ip:port", and each new connection has a new port.
+    monkeypatch.setattr(PlanDayThrottle, "rate", "1/day", raising=False)
+    assert plan(client, HTTP_X_FORWARDED_FOR="203.0.113.1:50001").status_code == 200
+    assert plan(client, HTTP_X_FORWARDED_FOR="203.0.113.1:50002").status_code == 429
+    assert plan(client, HTTP_X_FORWARDED_FOR="203.0.113.1").status_code == 429
+
+
+@pytest.mark.parametrize(
+    ("ident", "ip"),
+    [
+        ("203.0.113.1:50001", "203.0.113.1"),
+        ("203.0.113.1", "203.0.113.1"),
+        ("[2001:db8::1]:50001", "2001:db8::1"),
+        ("2001:db8::1", "2001:db8::1"),  # a bare IPv6 address keeps all its colons
+        ("::1", "::1"),
+    ],
+)
+def test_client_ip_drops_the_port(ident, ip):
+    assert client_ip(ident) == ip
 
 
 def test_health_is_not_throttled(client):

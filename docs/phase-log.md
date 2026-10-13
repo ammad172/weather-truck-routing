@@ -140,7 +140,8 @@ A running record of what each phase delivered, the decisions behind it, and what
 - **Counters** live in their own `limits` cache (`rate_limits` table), so provider-cache culling can't reset them. They do reset when the container restarts (see the README's Limitations).
 - **E2E:** the suite raises the throttles and (in replay) the cap. Fixed an old flaky locator: the map's scale bar can also read "50 mi".
 - **Live check of planning:** done on 2026-10-13 (Dallas → Denver, all checks passed), with the user's go-ahead.
-- **Tests:** 229 backend (13 new in `test_limits.py`), 40 frontend unit, and 10 e2e (60 of 60 over 6 repeats).
+- **Azure sends `ip:port`:** deployed, the per-IP limits never triggered. Over one kept-alive connection they did, so the key included the client's port, which changes with every connection. The port is now dropped.
+- **Tests:** 235 backend (19 new in `test_limits.py`), 40 frontend unit, and 10 e2e (60 of 60 over 6 repeats).
 
 ## Open items
 
