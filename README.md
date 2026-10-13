@@ -244,7 +244,7 @@ The hosted demo runs on free tiers, so one visitor (or a script) mustn't be able
   | `GET /api/geocode` | 60 a minute (place suggestions are debounced and cached, so typing uses far fewer) | `THROTTLE_GEOCODE_MINUTE` |
 
   Over the limit, the API answers 429 with `Retry-After` and "Too many requests from your connection. Try again in …", which the UI shows as is. `/api/health` isn't throttled.
-- **The client IP:** behind Azure's ingress, the client is the last `X-Forwarded-For` entry (`NUM_PROXIES=1`, the default). Entries a client adds itself come before it, so they can't buy a fresh allowance. Azure writes that entry as `ip:port`, and every new connection has a new port, so the port is dropped: otherwise each connection would get its own allowance (found on the live app, where the limits at first never triggered). Deployed with no proxy in front, set `NUM_PROXIES=0` to use the socket address.
+- **The client IP:** behind Azure's ingress, the client is the last `X-Forwarded-For` entry (`NUM_PROXIES=1`, the default). Entries a client adds itself come before it, so they can't buy a fresh allowance. Deployed with no proxy in front, set `NUM_PROXIES=0` to use the socket address.
 - **A global daily cap on HERE requests:** at most `HERE_DAILY_CAP` (default **300**) requests to HERE per UTC day, from all visitors together. HERE's free plan allows 30,000 a month each for routing and geocoding, about 1,000 a day. A new plan makes at most 7 (two geocodes, one route request, up to four detours), so 300 is still 40 or more brand-new plans a day.
   - Only real requests to HERE count. Cached routes and places are free, and keep working after the cap is reached.
   - The count is checked **before** sending, so a refused request never reaches HERE. Plan and place search then answer 503: "Daily demo limit reached. Try again tomorrow (the limit resets at 00:00 UTC).", with `Retry-After` set to the seconds until midnight UTC.
@@ -459,7 +459,7 @@ A script for a screen recording of the live app. The checks below each step are 
 - One Django + React container. HERE provides geocoding and truck routing (on the truck's gross weight), and Open-Meteo the hourly forecasts.
 - Weather lookups snap to a shared 0.1° grid and are cached, which keeps a plan within the free tier.
 - The heatmap shows the worst of each cell's neighbours, so a single storm cell is never averaged away.
-- Tests: 235 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.
+- Tests: 229 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.
 
 ## License
 

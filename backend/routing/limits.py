@@ -6,7 +6,6 @@ allowance. Both keep their counters in the "limits" cache, apart from the provid
 """
 
 import logging
-import re
 import threading
 from datetime import UTC, datetime, timedelta
 
@@ -64,21 +63,7 @@ class _PerIpThrottle(SimpleRateThrottle):
         return caches["limits"]
 
     def get_cache_key(self, request, view):
-        return self.cache_format % {"scope": self.scope, "ident": client_ip(self.get_ident(request))}
-
-
-_IPV4_WITH_PORT = re.compile(r"^(\d{1,3}(?:\.\d{1,3}){3}):\d+$")
-_IPV6_WITH_PORT = re.compile(r"^\[([0-9A-Fa-f:.]+)\]:\d+$")
-
-
-def client_ip(ident: str) -> str:
-    """The address without a port.
-
-    Azure Container Apps' ingress adds the client to X-Forwarded-For as "ip:port", and every
-    new connection has a new port, so with the port each connection would get its own allowance.
-    """
-    match = _IPV4_WITH_PORT.match(ident) or _IPV6_WITH_PORT.match(ident)
-    return match.group(1) if match else ident
+        return self.cache_format % {"scope": self.scope, "ident": self.get_ident(request)}
 
 
 class PlanMinuteThrottle(_PerIpThrottle):
