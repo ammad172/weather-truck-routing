@@ -20,6 +20,18 @@ def health(request: Request) -> Response:
     return Response({"status": "ok"})
 
 
+# TEMPORARY: shows the caller their own forwarding headers, to see how Azure's ingress reports
+# the client address. Removed in the next commit.
+@api_view(["GET"])
+def debug_ip(request: Request) -> Response:
+    from .limits import PlanMinuteThrottle, client_ip
+
+    names = ["REMOTE_ADDR", "HTTP_X_FORWARDED_FOR", "HTTP_X_ENVOY_EXTERNAL_ADDRESS", "HTTP_X_REAL_IP",
+             "HTTP_X_ORIGINAL_FORWARDED_FOR", "HTTP_FORWARDED", "HTTP_X_CLIENT_IP", "HTTP_X_AZURE_CLIENTIP"]
+    headers = {name: request.META.get(name) for name in names}
+    return Response({**headers, "ident": client_ip(PlanMinuteThrottle().get_ident(request))})
+
+
 @api_view(["GET"])
 @throttle_classes([GeocodeMinuteThrottle])
 def geocode(request: Request) -> Response:
