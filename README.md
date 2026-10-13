@@ -426,3 +426,7 @@ A script for a screen recording of the live app. The checks below each step are 
 - Weather lookups snap to a shared 0.1° grid and are cached, which keeps a plan within the free tier.
 - The heatmap shows the worst of each cell's neighbours, so a single storm cell is never averaged away.
 - Tests: 216 backend tests, 40 frontend unit tests, and 10 end-to-end tests that replay recorded API responses.
+
+## License
+
+© 2026 Ammad Khan. All rights reserved. This code is shared for evaluation and portfolio purposes only. No licence is granted to copy, modify, or use it. See [LICENSE](LICENSE).
